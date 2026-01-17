@@ -406,9 +406,13 @@ async function handleUserPromptSubmit(input: UserPromptSubmitInput): Promise<Hoo
   }
 
   // Check for special commands (case-insensitive)
+  // Supports both natural language and slash command formats
   const lowerPrompt = prompt.toLowerCase().trim();
 
-  if (lowerPrompt === "disable remember logging") {
+  // Disable logging command
+  if (lowerPrompt === "disable remember logging" ||
+      lowerPrompt === "/claude-remember:disable" ||
+      lowerPrompt === "/remember:disable") {
     disableProjectLogging(cwd);
     const projectName = basename(cwd);
     return {
@@ -416,9 +420,30 @@ async function handleUserPromptSubmit(input: UserPromptSubmitInput): Promise<Hoo
     };
   }
 
-  if (lowerPrompt === "retry remember logging") {
+  // Retry failed events command
+  if (lowerPrompt === "retry remember logging" ||
+      lowerPrompt === "/claude-remember:retry" ||
+      lowerPrompt === "/remember:retry") {
     const result = await retryFailedEventsFromPrompt();
     return { result };
+  }
+
+  // Enable logging command (delete the config file)
+  if (lowerPrompt === "enable remember logging" ||
+      lowerPrompt === "/claude-remember:enable" ||
+      lowerPrompt === "/remember:enable") {
+    const configPath = join(cwd, PROJECT_CONFIG_FILE);
+    const projectName = basename(cwd);
+    if (existsSync(configPath)) {
+      const { unlinkSync } = await import("fs");
+      unlinkSync(configPath);
+      return {
+        result: `[Claude Remember] Session logging has been re-enabled for "${projectName}". The .claude-remember.json file was removed.`,
+      };
+    }
+    return {
+      result: `[Claude Remember] Session logging is already enabled for "${projectName}".`,
+    };
   }
 
   // Check if logging is enabled

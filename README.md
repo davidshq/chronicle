@@ -30,7 +30,34 @@ bun install
 bun run install-hooks
 ```
 
-This will add the necessary hooks to your `~/.claude/settings.json`.
+This will:
+1. Create a symlink at `~/.claude/plugins/claude-remember`
+2. Enable the plugin in `~/.claude/settings.json`
+3. Remove any legacy hooks from previous installations
+
+After installation, you'll see `claude-remember@local` in your enabled plugins.
+
+### Slash Commands
+
+The plugin provides both deterministic commands (run exact code) and LLM-interpreted commands:
+
+**Deterministic commands** (handled by hook, always behave the same):
+
+| Command | Alias | Description |
+|---------|-------|-------------|
+| `/claude-remember:disable` | `/remember:disable` | Disable logging for this project |
+| `/claude-remember:enable` | `/remember:enable` | Re-enable logging for this project |
+| `/claude-remember:retry` | `/remember:retry` | Retry any failed logging events |
+
+You can also use natural language: "disable remember logging", "enable remember logging", "retry remember logging"
+
+**LLM-interpreted commands** (Claude decides how to fulfill the request):
+
+| Command | Description |
+|---------|-------------|
+| `/claude-remember:status` | View logging status and recent sessions |
+| `/claude-remember:search <query>` | Search past sessions by keyword |
+| `/claude-remember:today` | List all sessions from today |
 
 ### Uninstall
 
@@ -38,7 +65,7 @@ This will add the necessary hooks to your `~/.claude/settings.json`.
 bun run uninstall-hooks
 ```
 
-This removes the hooks but preserves your log files.
+This removes the plugin symlink and disables it, but preserves your log files.
 
 ## Output
 
@@ -258,19 +285,24 @@ Consider:
 
 ## Troubleshooting
 
-### Hooks not firing
+### Plugin not working
 
-1. Check that hooks are in your settings:
+1. Check that the plugin is enabled:
    ```bash
-   cat ~/.claude/settings.json | grep -A5 "SessionStart"
+   cat ~/.claude/settings.json | grep claude-remember
    ```
 
-2. Verify Bun is in your PATH:
+2. Verify the symlink exists:
+   ```bash
+   ls -la ~/.claude/plugins/claude-remember
+   ```
+
+3. Verify Bun is in your PATH:
    ```bash
    which bun
    ```
 
-3. Enable debug mode in config and check stderr
+4. Enable debug mode in config and check stderr
 
 ### Database locked errors
 
@@ -282,8 +314,8 @@ The plugin uses WAL mode to handle concurrent access. If you still see lock erro
 
 If sessions aren't being logged:
 1. Check if the project is in `excludeProjects`
-2. Verify the hook handler path is correct in settings
-3. Check for errors: `bun run ~/.../src/handler.ts < /dev/null 2>&1`
+2. Check for a local `.claude-remember.json` with `enabled: false`
+3. Test the handler manually: `echo '{}' | bun run ~/.claude/plugins/claude-remember/src/handler.ts`
 
 ## Development
 

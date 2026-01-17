@@ -149,6 +149,145 @@ describe("handler integration", () => {
     expect(config.enabled).toBe(false);
   });
 
+  test("handles /claude-remember:disable slash command", async () => {
+    const sessionId = "slash-disable-session-" + Date.now();
+
+    await runHandler({
+      hook_event_name: "SessionStart",
+      session_id: sessionId,
+      cwd: TEST_PROJECT_DIR,
+      source: "startup",
+      transcript_path: "/tmp/transcript.jsonl",
+      permission_mode: "default",
+    });
+
+    const { stdout } = await runHandler({
+      hook_event_name: "UserPromptSubmit",
+      session_id: sessionId,
+      cwd: TEST_PROJECT_DIR,
+      prompt: "/claude-remember:disable",
+      transcript_path: "/tmp/transcript.jsonl",
+      permission_mode: "default",
+    });
+
+    expect(existsSync(TEST_CONFIG_PATH)).toBe(true);
+    expect(stdout).toContain("disabled");
+  });
+
+  test("handles /remember:disable short alias", async () => {
+    const sessionId = "short-disable-session-" + Date.now();
+
+    await runHandler({
+      hook_event_name: "SessionStart",
+      session_id: sessionId,
+      cwd: TEST_PROJECT_DIR,
+      source: "startup",
+      transcript_path: "/tmp/transcript.jsonl",
+      permission_mode: "default",
+    });
+
+    const { stdout } = await runHandler({
+      hook_event_name: "UserPromptSubmit",
+      session_id: sessionId,
+      cwd: TEST_PROJECT_DIR,
+      prompt: "/remember:disable",
+      transcript_path: "/tmp/transcript.jsonl",
+      permission_mode: "default",
+    });
+
+    expect(existsSync(TEST_CONFIG_PATH)).toBe(true);
+    expect(stdout).toContain("disabled");
+  });
+
+  test("handles enable remember logging command", async () => {
+    // First create a disabled config
+    writeFileSync(TEST_CONFIG_PATH, JSON.stringify({ enabled: false }));
+    expect(existsSync(TEST_CONFIG_PATH)).toBe(true);
+
+    const sessionId = "enable-test-session-" + Date.now();
+
+    const { stdout } = await runHandler({
+      hook_event_name: "UserPromptSubmit",
+      session_id: sessionId,
+      cwd: TEST_PROJECT_DIR,
+      prompt: "enable remember logging",
+      transcript_path: "/tmp/transcript.jsonl",
+      permission_mode: "default",
+    });
+
+    // Config file should be removed
+    expect(existsSync(TEST_CONFIG_PATH)).toBe(false);
+    expect(stdout).toContain("re-enabled");
+  });
+
+  test("handles /claude-remember:enable slash command", async () => {
+    writeFileSync(TEST_CONFIG_PATH, JSON.stringify({ enabled: false }));
+
+    const sessionId = "slash-enable-session-" + Date.now();
+
+    const { stdout } = await runHandler({
+      hook_event_name: "UserPromptSubmit",
+      session_id: sessionId,
+      cwd: TEST_PROJECT_DIR,
+      prompt: "/claude-remember:enable",
+      transcript_path: "/tmp/transcript.jsonl",
+      permission_mode: "default",
+    });
+
+    expect(existsSync(TEST_CONFIG_PATH)).toBe(false);
+    expect(stdout).toContain("re-enabled");
+  });
+
+  test("enable command when already enabled", async () => {
+    // No config file exists = already enabled
+    expect(existsSync(TEST_CONFIG_PATH)).toBe(false);
+
+    const sessionId = "already-enabled-session-" + Date.now();
+
+    const { stdout } = await runHandler({
+      hook_event_name: "UserPromptSubmit",
+      session_id: sessionId,
+      cwd: TEST_PROJECT_DIR,
+      prompt: "/remember:enable",
+      transcript_path: "/tmp/transcript.jsonl",
+      permission_mode: "default",
+    });
+
+    expect(stdout).toContain("already enabled");
+  });
+
+  test("handles /claude-remember:retry with no failed events", async () => {
+    // Clear any existing failed events file to isolate the test
+    const failedEventsPath = join(require("os").homedir(), ".claude-logs", ".failed-events.json");
+    if (existsSync(failedEventsPath)) {
+      rmSync(failedEventsPath);
+    }
+
+    const sessionId = "retry-empty-session-" + Date.now();
+
+    // Create session first (required for UserPromptSubmit to work)
+    await runHandler({
+      hook_event_name: "SessionStart",
+      session_id: sessionId,
+      cwd: TEST_PROJECT_DIR,
+      source: "startup",
+      transcript_path: "/tmp/transcript.jsonl",
+      permission_mode: "default",
+    });
+
+    const { stdout } = await runHandler({
+      hook_event_name: "UserPromptSubmit",
+      session_id: sessionId,
+      cwd: TEST_PROJECT_DIR,
+      prompt: "/claude-remember:retry",
+      transcript_path: "/tmp/transcript.jsonl",
+      permission_mode: "default",
+    });
+
+    // Should indicate no failed events or success
+    expect(stdout).toContain("No failed events");
+  });
+
   test("handles PreToolUse event", async () => {
     const sessionId = "tool-test-session-" + Date.now();
 

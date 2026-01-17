@@ -1,0 +1,10 @@
+{
+  "name": "claude-remember",
+  "description": "Session logger that persists Claude Code conversations to markdown files and SQLite database",
+  "version": "0.3.0",
+  "author": {
+    "name": "Dave"
+  },
+  "commands": "./commands/",
+  "hooks": "./hooks/hooks.json"
+}

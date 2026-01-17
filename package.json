@@ -1,6 +1,6 @@
 {
   "name": "claude-session-logger",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Claude Code plugin that logs sessions to markdown files and SQLite database",
   "type": "module",
   "main": "src/handler.ts",
