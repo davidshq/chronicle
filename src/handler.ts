@@ -340,7 +340,7 @@ async function handleSessionStart(input: SessionStartInput): Promise<HookOutput 
     if (existing) {
       debugLog("Resuming existing session:", session_id);
       if (markdownEnabled) {
-        findExistingMarkdownFile(session_id, cwd);
+        findExistingMarkdownFile(session_id, cwd, customLogDir, customDbPath);
       }
       return;
     }
@@ -355,9 +355,9 @@ async function handleSessionStart(input: SessionStartInput): Promise<HookOutput 
     }, customDbPath);
   }
 
-  // Initialize markdown file (with custom log dir if configured)
+  // Initialize markdown file (with custom log dir and db path if configured)
   if (markdownEnabled) {
-    initMarkdownFile(session_id, cwd, timestamp, source, customLogDir);
+    initMarkdownFile(session_id, cwd, timestamp, source, customLogDir, customDbPath);
   }
 
   // Initialize session state
@@ -626,9 +626,9 @@ function ensureSession(input: HookInput): void {
   if (sqliteEnabled) {
     const existing = getSession(session_id, customDbPath);
     if (existing) {
-      // Try to find markdown file
+      // Try to find markdown file (pass custom paths for proper lookup)
       if (markdownEnabled) {
-        findExistingMarkdownFile(session_id, cwd);
+        findExistingMarkdownFile(session_id, cwd, customLogDir, customDbPath);
       }
       return;
     }
@@ -648,7 +648,7 @@ function ensureSession(input: HookInput): void {
   }
 
   if (markdownEnabled) {
-    initMarkdownFile(session_id, cwd, timestamp, "hook", customLogDir);
+    initMarkdownFile(session_id, cwd, timestamp, "hook", customLogDir, customDbPath);
   }
 
   sessionState.set(session_id, {});

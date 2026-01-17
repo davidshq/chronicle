@@ -89,7 +89,7 @@ export function generateMarkdownPath(sessionId: string, projectPath: string, sta
   return join(dateDir, `${sequence}_${timeStr}_${shortSessionId}_${projectName}.md`);
 }
 
-export function initMarkdownFile(sessionId: string, projectPath: string, startedAt: string, source: string, customLogDir?: string | null): string {
+export function initMarkdownFile(sessionId: string, projectPath: string, startedAt: string, source: string, customLogDir?: string | null, customDbPath?: string | null): string {
   const startDate = new Date(startedAt);
 
   // First check if we already have an active session in memory
@@ -101,8 +101,8 @@ export function initMarkdownFile(sessionId: string, projectPath: string, started
     return existingActive.filePath;
   }
 
-  // Check database for existing path
-  const dbPath = getSessionMarkdownPath(sessionId);
+  // Check database for existing path (use custom DB if configured)
+  const dbPath = getSessionMarkdownPath(sessionId, customDbPath);
   if (dbPath && existsSync(dbPath)) {
     debugLog("Resuming from database path:", dbPath);
     activeSessions.set(sessionId, { filePath: dbPath, sessionId, projectPath, startedAt });
@@ -111,12 +111,12 @@ export function initMarkdownFile(sessionId: string, projectPath: string, started
     return dbPath;
   }
 
-  // Search for existing file by session ID in filename
+  // Search for existing file by session ID in filename (use custom log dir if configured)
   const existingFile = searchForSessionFile(sessionId, customLogDir);
   if (existingFile) {
     debugLog("Found existing file by search:", existingFile);
     activeSessions.set(sessionId, { filePath: existingFile, sessionId, projectPath, startedAt });
-    updateSessionMarkdownPath(sessionId, existingFile);
+    updateSessionMarkdownPath(sessionId, existingFile, customDbPath);
     const resumeMarker = `\n---\n\n## Session Resumed\n**Time**: ${new Date().toISOString()}\n**Source**: ${source}\n\n---\n\n`;
     appendFileSync(existingFile, resumeMarker);
     return existingFile;
@@ -137,7 +137,7 @@ export function initMarkdownFile(sessionId: string, projectPath: string, started
 
   writeFileSync(filePath, header);
   activeSessions.set(sessionId, { filePath, sessionId, projectPath, startedAt });
-  updateSessionMarkdownPath(sessionId, filePath);
+  updateSessionMarkdownPath(sessionId, filePath, customDbPath);
   debugLog("Created markdown file:", filePath);
 
   return filePath;
@@ -349,9 +349,9 @@ function searchForSessionFile(sessionId: string, customLogDir?: string | null, m
 }
 
 // For resuming sessions - try to find existing markdown file
-export function findExistingMarkdownFile(sessionId: string, projectPath: string): string | null {
-  // First check database
-  const dbPath = getSessionMarkdownPath(sessionId);
+export function findExistingMarkdownFile(sessionId: string, projectPath: string, customLogDir?: string | null, customDbPath?: string | null): string | null {
+  // First check database (use custom DB if configured)
+  const dbPath = getSessionMarkdownPath(sessionId, customDbPath);
   if (dbPath && existsSync(dbPath)) {
     activeSessions.set(sessionId, {
       filePath: dbPath,
@@ -362,8 +362,8 @@ export function findExistingMarkdownFile(sessionId: string, projectPath: string)
     return dbPath;
   }
 
-  // Search by session ID in filename
-  const foundPath = searchForSessionFile(sessionId);
+  // Search by session ID in filename (use custom log dir if configured)
+  const foundPath = searchForSessionFile(sessionId, customLogDir);
   if (foundPath) {
     activeSessions.set(sessionId, {
       filePath: foundPath,
@@ -371,7 +371,7 @@ export function findExistingMarkdownFile(sessionId: string, projectPath: string)
       projectPath,
       startedAt: new Date().toISOString(),
     });
-    updateSessionMarkdownPath(sessionId, foundPath);
+    updateSessionMarkdownPath(sessionId, foundPath, customDbPath);
     return foundPath;
   }
 
