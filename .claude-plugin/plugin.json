@@ -1,7 +1,7 @@
 {
   "name": "claude-remember",
   "description": "Session logger that persists Claude Code conversations to markdown files and SQLite database",
-  "version": "0.3.1",
+  "version": "0.3.3",
   "author": {
     "name": "Dave"
   },
