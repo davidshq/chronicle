@@ -9,7 +9,7 @@
 
 import { existsSync, copyFileSync, readFileSync, writeFileSync } from "fs";
 import { join, basename } from "path";
-import { debugLog, shouldExcludeProject, shouldExcludeTool, getConfig } from "./config";
+import { debugLog, shouldExcludeProject, shouldExcludeTool, getConfig, getFailedEventsPath } from "./config";
 import {
   createSession,
   updateSessionEnd,
@@ -49,7 +49,7 @@ import type {
   NotificationInput,
   PermissionRequestInput,
   PreCompactInput,
-  HookEventName,
+  ToolInput,
 } from "./types";
 
 // Track tool call start times for duration calculation
@@ -57,6 +57,144 @@ const toolCallStartTimes = new Map<string, number>();
 
 // Track last processed state per session to avoid duplicates
 const sessionState = new Map<string, { lastAssistantContent?: string }>();
+
+/**
+ * Sleep for the specified number of milliseconds
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Retry an async operation with configurable attempts and delay
+ */
+async function withRetry<T>(
+  operation: () => Promise<T>,
+  options: { maxRetries: number; delayMs: number; operationName: string }
+): Promise<T> {
+  let lastError: Error | unknown;
+
+  for (let attempt = 1; attempt <= options.maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      if (attempt < options.maxRetries) {
+        console.error(
+          `[claude-remember] ${options.operationName} failed (attempt ${attempt}/${options.maxRetries}): ${errorMessage}`
+        );
+        console.error(`[claude-remember] Retrying in ${options.delayMs / 1000}s...`);
+        await sleep(options.delayMs);
+      }
+    }
+  }
+
+  throw lastError;
+}
+
+/**
+ * Store a failed event for manual retry later
+ */
+interface FailedEvent {
+  timestamp: string;
+  event: HookInput;
+  error: string;
+  attempts: number;
+}
+
+function storeFailedEvent(event: HookInput, error: string, attempts: number): void {
+  const failedEventsPath = getFailedEventsPath();
+  let failedEvents: FailedEvent[] = [];
+
+  // Load existing failed events
+  if (existsSync(failedEventsPath)) {
+    try {
+      const content = readFileSync(failedEventsPath, "utf-8");
+      failedEvents = JSON.parse(content);
+    } catch {
+      // Ignore parse errors, start fresh
+    }
+  }
+
+  // Add new failed event
+  failedEvents.push({
+    timestamp: new Date().toISOString(),
+    event,
+    error,
+    attempts,
+  });
+
+  // Keep only last 100 failed events to prevent unbounded growth
+  if (failedEvents.length > 100) {
+    failedEvents = failedEvents.slice(-100);
+  }
+
+  writeFileSync(failedEventsPath, JSON.stringify(failedEvents, null, 2));
+  debugLog("Stored failed event for retry:", event.hook_event_name);
+}
+
+/**
+ * Retry failed events when user types "retry remember logging"
+ */
+async function retryFailedEventsFromPrompt(): Promise<string> {
+  const failedEventsPath = getFailedEventsPath();
+
+  if (!existsSync(failedEventsPath)) {
+    return "[Claude Remember] No failed events found. Everything is logged successfully!";
+  }
+
+  let failedEvents: FailedEvent[];
+  try {
+    const content = readFileSync(failedEventsPath, "utf-8");
+    failedEvents = JSON.parse(content);
+  } catch {
+    return "[Claude Remember] Could not read failed events file.";
+  }
+
+  if (failedEvents.length === 0) {
+    return "[Claude Remember] No failed events to retry. Everything is logged successfully!";
+  }
+
+  let successCount = 0;
+  let failCount = 0;
+  const stillFailed: FailedEvent[] = [];
+
+  for (const failedEvent of failedEvents) {
+    // Use project-specific config for each event
+    const eventConfig = getEffectiveConfig(failedEvent.event.cwd);
+
+    try {
+      await withRetry(
+        () => processEvent(failedEvent.event as HookInput),
+        {
+          maxRetries: eventConfig.maxRetries,
+          delayMs: eventConfig.retryDelayMs,
+          operationName: `Retry ${failedEvent.event.hook_event_name}`,
+        }
+      );
+      successCount++;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      failCount++;
+      stillFailed.push({
+        ...failedEvent,
+        attempts: failedEvent.attempts + eventConfig.maxRetries,
+        error: errorMessage,
+      });
+    }
+  }
+
+  // Update the failed events file
+  writeFileSync(failedEventsPath, JSON.stringify(stillFailed, null, 2));
+
+  if (stillFailed.length > 0) {
+    return `[Claude Remember] Retry complete: ${successCount} succeeded, ${failCount} still failing. Say "retry remember logging" again later.`;
+  }
+
+  return `[Claude Remember] Retry complete: ${successCount} event(s) logged successfully!`;
+}
 
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
@@ -81,9 +219,17 @@ const PROJECT_CONFIG_FILE = ".claude-remember.json";
 interface ProjectConfig {
   enabled?: boolean;
   logDir?: string;
-  dbPath?: string;     // custom SQLite database path
-  markdown?: boolean;  // default true
-  sqlite?: boolean;    // default true
+  dbPath?: string;           // custom SQLite database path
+  markdown?: boolean;        // default true
+  sqlite?: boolean;          // default true
+  // All global config options can be overridden per-project
+  blockOnFailure?: boolean;  // override global blockOnFailure
+  maxRetries?: number;       // override global maxRetries
+  retryDelayMs?: number;     // override global retryDelayMs
+  maxSearchDays?: number;    // override global maxSearchDays
+  includeToolOutputs?: boolean;
+  maxToolOutputLength?: number;
+  debug?: boolean;
 }
 
 function getProjectConfig(projectPath: string): ProjectConfig | null {
@@ -130,6 +276,34 @@ function isSqliteEnabled(projectPath: string): boolean {
 function getProjectDbPath(projectPath: string): string | null {
   const config = getProjectConfig(projectPath);
   return config?.dbPath || null;
+}
+
+/**
+ * Get effective config for a project - merges project config over global config.
+ * Project-level settings override global settings.
+ */
+function getEffectiveConfig(projectPath: string): ReturnType<typeof getConfig> {
+  const globalConfig = getConfig();
+  const projectConfig = getProjectConfig(projectPath);
+
+  if (!projectConfig) {
+    return globalConfig;
+  }
+
+  return {
+    ...globalConfig,
+    // Override with project-specific values if defined
+    blockOnFailure: projectConfig.blockOnFailure ?? globalConfig.blockOnFailure,
+    maxRetries: projectConfig.maxRetries ?? globalConfig.maxRetries,
+    retryDelayMs: projectConfig.retryDelayMs ?? globalConfig.retryDelayMs,
+    maxSearchDays: projectConfig.maxSearchDays ?? globalConfig.maxSearchDays,
+    includeToolOutputs: projectConfig.includeToolOutputs ?? globalConfig.includeToolOutputs,
+    maxToolOutputLength: projectConfig.maxToolOutputLength ?? globalConfig.maxToolOutputLength,
+    debug: projectConfig.debug ?? globalConfig.debug,
+    // These are already handled by other functions but include for completeness
+    logDir: projectConfig.logDir ?? globalConfig.logDir,
+    dbPath: projectConfig.dbPath ?? globalConfig.dbPath,
+  };
 }
 
 async function handleSessionStart(input: SessionStartInput): Promise<HookOutput | void> {
@@ -231,14 +405,20 @@ async function handleUserPromptSubmit(input: UserPromptSubmitInput): Promise<Hoo
     return;
   }
 
-  // Check for disable command (case-insensitive)
+  // Check for special commands (case-insensitive)
   const lowerPrompt = prompt.toLowerCase().trim();
+
   if (lowerPrompt === "disable remember logging") {
     disableProjectLogging(cwd);
     const projectName = basename(cwd);
     return {
       result: `[Claude Remember] Session logging has been disabled for "${projectName}". A .claude-remember.json file was created. Delete it to re-enable logging.`,
     };
+  }
+
+  if (lowerPrompt === "retry remember logging") {
+    const result = await retryFailedEventsFromPrompt();
+    return { result };
   }
 
   // Check if logging is enabled
@@ -338,12 +518,12 @@ async function handlePostToolUse(input: PostToolUseInput): Promise<void> {
 
   // Update tool call in database
   if (sqliteEnabled) {
-    updateToolCallSuccess(session_id, tool_name, tool_use_id, success, customDbPath);
+    updateToolCallSuccess(session_id, tool_name, tool_use_id, success, duration, customDbPath);
   }
 
   // Format output for markdown
   if (markdownEnabled) {
-    let output: string | undefined;
+    let output: string | null = null;
     if (tool_response) {
       if (typeof tool_response === "string") {
         output = tool_response;
@@ -351,7 +531,7 @@ async function handlePostToolUse(input: PostToolUseInput): Promise<void> {
         output = JSON.stringify(tool_response, null, 2);
       }
     }
-    appendToolResult(session_id, tool_name, success, output);
+    appendToolResult(session_id, tool_name, success, output ?? undefined);
   }
 }
 
@@ -406,53 +586,76 @@ function ensureSession(input: HookInput): void {
   const { session_id, cwd } = input;
   const customDbPath = getProjectDbPath(cwd);
   const customLogDir = getProjectLogDir(cwd);
+  const sqliteEnabled = isSqliteEnabled(cwd);
+  const markdownEnabled = isMarkdownEnabled(cwd);
 
   // Check if we have an active markdown file
-  const existingPath = getActiveMarkdownPath(session_id);
-  if (existingPath) {
-    return;
+  if (markdownEnabled) {
+    const existingPath = getActiveMarkdownPath(session_id);
+    if (existingPath) {
+      return;
+    }
   }
 
-  // Check database
-  const existing = getSession(session_id, customDbPath);
-  if (existing) {
-    // Try to find markdown file
-    findExistingMarkdownFile(session_id, cwd);
-    return;
+  // Check database for existing session
+  if (sqliteEnabled) {
+    const existing = getSession(session_id, customDbPath);
+    if (existing) {
+      // Try to find markdown file
+      if (markdownEnabled) {
+        findExistingMarkdownFile(session_id, cwd);
+      }
+      return;
+    }
   }
 
   // Create new session (this can happen if SessionStart hook didn't fire)
   const timestamp = new Date().toISOString();
-  createSession({
-    id: session_id,
-    project_path: cwd,
-    started_at: timestamp,
-    status: "active",
-    interface: getInterface(),
-  }, customDbPath);
 
-  initMarkdownFile(session_id, cwd, timestamp, "hook", customLogDir);
+  if (sqliteEnabled) {
+    createSession({
+      id: session_id,
+      project_path: cwd,
+      started_at: timestamp,
+      status: "active",
+      interface: getInterface(),
+    }, customDbPath);
+  }
+
+  if (markdownEnabled) {
+    initMarkdownFile(session_id, cwd, timestamp, "hook", customLogDir);
+  }
+
   sessionState.set(session_id, {});
 }
 
-function getToolInputSummary(toolName: string, input: any): string {
+function getToolInputSummary(toolName: string, input: ToolInput): string {
+  // Type guard helper for safe property access
+  const get = (key: string): string => {
+    if (typeof input === "object" && input !== null && key in input) {
+      const val = (input as Record<string, unknown>)[key];
+      return typeof val === "string" ? val : "";
+    }
+    return "";
+  };
+
   switch (toolName) {
     case "Bash":
-      return input.command?.substring(0, 100) || "";
+      return get("command").substring(0, 100);
     case "Write":
     case "Read":
     case "Edit":
-      return input.file_path || "";
+      return get("file_path");
     case "Glob":
-      return input.pattern || "";
+      return get("pattern");
     case "Grep":
-      return `${input.pattern} in ${input.path || "."}`;
+      return `${get("pattern")} in ${get("path") || "."}`;
     case "WebFetch":
-      return input.url || "";
+      return get("url");
     case "WebSearch":
-      return input.query || "";
+      return get("query");
     case "Task":
-      return input.description || "";
+      return get("description");
     default:
       return JSON.stringify(input).substring(0, 100);
   }
@@ -639,7 +842,53 @@ async function handlePreCompact(input: PreCompactInput): Promise<void> {
   }
 }
 
+/**
+ * Process a single hook event with retry logic
+ */
+async function processEvent(input: HookInput): Promise<HookOutput | undefined> {
+  const eventName = input.hook_event_name;
+
+  debugLog("Processing event:", eventName);
+
+  switch (eventName) {
+    case "SessionStart":
+      return await handleSessionStart(input as SessionStartInput) || undefined;
+    case "SessionEnd":
+      await handleSessionEnd(input as SessionEndInput);
+      return undefined;
+    case "UserPromptSubmit":
+      return await handleUserPromptSubmit(input as UserPromptSubmitInput) || undefined;
+    case "PreToolUse":
+      await handlePreToolUse(input as PreToolUseInput);
+      return undefined;
+    case "PostToolUse":
+      await handlePostToolUse(input as PostToolUseInput);
+      return undefined;
+    case "Stop":
+      await handleStop(input as StopInput);
+      return undefined;
+    case "SubagentStop":
+      await handleSubagentStop(input as SubagentStopInput);
+      return undefined;
+    case "Notification":
+      await handleNotification(input as NotificationInput);
+      return undefined;
+    case "PermissionRequest":
+      await handlePermissionRequest(input as PermissionRequestInput);
+      return undefined;
+    case "PreCompact":
+      await handlePreCompact(input as PreCompactInput);
+      return undefined;
+    default:
+      debugLog("Unhandled event:", eventName);
+      return undefined;
+  }
+}
+
 async function main(): Promise<void> {
+  // Start with global config, will get project-specific after parsing input
+  let config = getConfig();
+
   try {
     // Read hook input from stdin
     const stdinContent = await readStdin();
@@ -651,44 +900,43 @@ async function main(): Promise<void> {
     const input: HookInput = JSON.parse(stdinContent);
     const eventName = input.hook_event_name;
 
+    // Get project-specific config (overrides global settings)
+    config = getEffectiveConfig(input.cwd);
+
     debugLog("Received event:", eventName);
 
-    // Route to appropriate handler
-    let output: HookOutput | void;
+    let output: HookOutput | undefined = undefined;
 
-    switch (eventName) {
-      case "SessionStart":
-        output = await handleSessionStart(input as SessionStartInput);
-        break;
-      case "SessionEnd":
-        await handleSessionEnd(input as SessionEndInput);
-        break;
-      case "UserPromptSubmit":
-        output = await handleUserPromptSubmit(input as UserPromptSubmitInput);
-        break;
-      case "PreToolUse":
-        await handlePreToolUse(input as PreToolUseInput);
-        break;
-      case "PostToolUse":
-        await handlePostToolUse(input as PostToolUseInput);
-        break;
-      case "Stop":
-        await handleStop(input as StopInput);
-        break;
-      case "SubagentStop":
-        await handleSubagentStop(input as SubagentStopInput);
-        break;
-      case "Notification":
-        await handleNotification(input as NotificationInput);
-        break;
-      case "PermissionRequest":
-        await handlePermissionRequest(input as PermissionRequestInput);
-        break;
-      case "PreCompact":
-        await handlePreCompact(input as PreCompactInput);
-        break;
-      default:
-        debugLog("Unhandled event:", eventName);
+    try {
+      // Process with retry if configured
+      output = await withRetry(
+        () => processEvent(input),
+        {
+          maxRetries: config.maxRetries,
+          delayMs: config.retryDelayMs,
+          operationName: `Logging ${eventName}`,
+        }
+      );
+    } catch (error) {
+      // All retries exhausted
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`[claude-remember] Logging failed after ${config.maxRetries} attempts: ${errorMessage}`);
+
+      // Store event for manual retry
+      storeFailedEvent(input, errorMessage, config.maxRetries);
+
+      if (config.blockOnFailure) {
+        // User configured to block Claude on failure
+        console.error("[claude-remember] blockOnFailure is enabled. Say 'retry remember logging' to retry failed events.");
+        // Output failure message to Claude
+        console.log(JSON.stringify({
+          result: `[Claude Remember] Logging failed after ${config.maxRetries} attempts. Say "retry remember logging" to retry, or check ~/.claude-logs/.failed-events.json`,
+        }));
+        process.exit(1); // Non-zero exit blocks the hook
+      } else {
+        // Fail-safe mode: warn but don't block
+        console.error("[claude-remember] Continuing despite failure (blockOnFailure=false).");
+      }
     }
 
     // Output hook result if there is one
@@ -699,9 +947,15 @@ async function main(): Promise<void> {
     // Success - exit cleanly
     process.exit(0);
   } catch (error) {
-    // Log error but don't block Claude
-    console.error("[claude-session-logger] Error:", error);
-    process.exit(0); // Exit 0 to not block Claude
+    // Parse error or other critical failure
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error("[claude-remember] Critical error:", errorMessage);
+
+    if (config.blockOnFailure) {
+      process.exit(1);
+    } else {
+      process.exit(0); // Exit 0 to not block Claude (fail-safe)
+    }
   }
 }
 

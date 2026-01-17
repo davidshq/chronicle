@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync, appendFileSync, readdirSync, m
 import { join, basename } from "path";
 import { getConfig, getDateDir, getSessionsDir, debugLog } from "./config";
 import { getSessionMarkdownPath, updateSessionMarkdownPath } from "./db";
-import type { MessageRecord, SessionRecord, ToolInput, BashToolInput, WriteToolInput, EditToolInput, ReadToolInput } from "./types";
+import type { ToolInput, BashToolInput, WriteToolInput, EditToolInput, ReadToolInput, GlobToolInput, GrepToolInput, WebFetchToolInput, WebSearchToolInput } from "./types";
 
 // Get the sessions directory, optionally using a custom base log directory
 function getEffectiveSessionsDir(customLogDir?: string | null): string {
@@ -192,14 +192,22 @@ function formatToolInput(toolName: string, input: ToolInput): string {
       const readInput = input as ReadToolInput;
       return `**File**: \`${readInput.file_path}\``;
     }
-    case "Glob":
-      return `**Pattern**: \`${(input as any).pattern}\``;
-    case "Grep":
-      return `**Pattern**: \`${(input as any).pattern}\`\n**Path**: \`${(input as any).path || "."}\``;
-    case "WebFetch":
-      return `**URL**: ${(input as any).url}`;
-    case "WebSearch":
-      return `**Query**: ${(input as any).query}`;
+    case "Glob": {
+      const globInput = input as GlobToolInput;
+      return `**Pattern**: \`${globInput.pattern}\``;
+    }
+    case "Grep": {
+      const grepInput = input as GrepToolInput;
+      return `**Pattern**: \`${grepInput.pattern}\`\n**Path**: \`${grepInput.path || "."}\``;
+    }
+    case "WebFetch": {
+      const fetchInput = input as WebFetchToolInput;
+      return `**URL**: ${fetchInput.url}`;
+    }
+    case "WebSearch": {
+      const searchInput = input as WebSearchToolInput;
+      return `**Query**: ${searchInput.query}`;
+    }
     default:
       // Generic formatting for unknown tools
       const jsonStr = JSON.stringify(input, null, 2);
@@ -243,7 +251,7 @@ export function appendToolCall(
 
 export function appendToolResult(
   sessionId: string,
-  toolName: string,
+  _toolName: string,
   success: boolean,
   output?: string
 ): void {
@@ -308,19 +316,23 @@ export function finalizeMarkdownFile(sessionId: string, status: string, projectP
   }
 }
 
-// Search for existing file by session ID in filename (checks all date directories)
-function searchForSessionFile(sessionId: string, customLogDir?: string | null): string | null {
+// Search for existing file by session ID in filename (checks recent date directories)
+function searchForSessionFile(sessionId: string, customLogDir?: string | null, maxSearchDays?: number): string | null {
   const shortSessionId = sessionId.substring(0, 8);
   const sessionsDir = getEffectiveSessionsDir(customLogDir);
+  const config = getConfig();
+  const searchDays = maxSearchDays ?? config.maxSearchDays;
 
   if (!existsSync(sessionsDir)) return null;
 
-  // Check all date directories (handles timezone transitions and multi-day sessions)
+  // Check recent date directories (handles timezone transitions and multi-day sessions)
+  // Limited to maxSearchDays to avoid scanning years of logs
   const dateDirs = readdirSync(sessionsDir, { withFileTypes: true })
     .filter((d) => d.isDirectory() && /^\d{4}-\d{2}-\d{2}$/.test(d.name))
     .map((d) => d.name)
     .sort()
-    .reverse(); // Most recent first
+    .reverse() // Most recent first
+    .slice(0, searchDays); // Limit to configured days
 
   for (const dirName of dateDirs) {
     const dateDir = join(sessionsDir, dirName);

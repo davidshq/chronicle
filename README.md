@@ -68,7 +68,7 @@ Each markdown file contains:
 
 ### SQLite Database
 
-Located at `~/.claude-logs/sessions.db` with three tables:
+Located at `~/.claude-logs/sessions.db` with five tables:
 
 **sessions**
 - `id` - Session ID
@@ -76,6 +76,7 @@ Located at `~/.claude-logs/sessions.db` with three tables:
 - `started_at` / `ended_at` - Timestamps
 - `status` - active/completed/interrupted
 - `interface` - cli/vscode/web
+- `markdown_path` - Path to the markdown log file
 
 **messages**
 - `session_id` - Foreign key to sessions
@@ -91,6 +92,21 @@ Located at `~/.claude-logs/sessions.db` with three tables:
 - `success` - Whether the tool succeeded
 - `duration_ms` - Execution time
 
+**events**
+- `session_id` - Foreign key to sessions
+- `timestamp` - When the event occurred
+- `event_type` - notification/permission_request/pre_compact/subagent_stop
+- `subtype` - Event-specific subtype
+- `tool_name` - Tool involved (if applicable)
+- `message` - Event message or description
+
+**transcript_backups**
+- `session_id` - Foreign key to sessions
+- `timestamp` - When the backup was created
+- `trigger` - manual/auto
+- `transcript_path` - Original transcript location
+- `backup_path` - Where the backup was saved
+
 ## Configuration
 
 ### Per-Project Configuration
@@ -103,17 +119,28 @@ Create a `.claude-remember.json` file in any project root to configure logging f
   "logDir": "/path/to/custom-logs",
   "dbPath": "/path/to/custom-logs/sessions.db",
   "markdown": true,
-  "sqlite": true
+  "sqlite": true,
+  "blockOnFailure": true,
+  "maxRetries": 5
 }
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `enabled` | `true` | Master switch - set to `false` to disable all logging |
-| `logDir` | `~/.claude-logs` | Custom directory for this project's markdown logs and backups |
-| `dbPath` | `~/.claude-logs/sessions.db` | Custom path for this project's SQLite database |
+| `logDir` | (global) | Custom directory for this project's markdown logs and backups |
+| `dbPath` | (global) | Custom path for this project's SQLite database |
 | `markdown` | `true` | Enable markdown file logging |
 | `sqlite` | `true` | Enable SQLite database logging |
+| `blockOnFailure` | (global) | If `true`, exit non-zero on logging failure (blocks Claude) |
+| `maxRetries` | (global) | Number of retry attempts before giving up |
+| `retryDelayMs` | (global) | Delay between retries in milliseconds |
+| `maxSearchDays` | (global) | Days to search when finding session files |
+| `includeToolOutputs` | (global) | Include full tool outputs in markdown |
+| `maxToolOutputLength` | (global) | Truncate tool outputs longer than this |
+| `debug` | (global) | Enable debug logging to stderr |
+
+Per-project settings override global settings.
 
 **Example configurations:**
 
@@ -137,7 +164,9 @@ Create a `.claude-remember.json` file in any project root to configure logging f
 {"enabled": false}
 ```
 
-**Disabling via command:** Say "disable remember logging" in any Claude session to create a `.claude-remember.json` with `enabled: false`.
+**Commands you can say:**
+- `"disable remember logging"` - Creates `.claude-remember.json` with `enabled: false`
+- `"retry remember logging"` - Retries any failed logging events (useful if `blockOnFailure` is enabled)
 
 ### Global Configuration
 
@@ -151,7 +180,11 @@ Create `~/.claude-logs/config.json` to set defaults for all projects:
   "enableWAL": true,
   "excludeTools": ["Read"],
   "excludeProjects": ["/path/to/sensitive-project"],
-  "debug": false
+  "debug": false,
+  "blockOnFailure": false,
+  "maxRetries": 3,
+  "retryDelayMs": 2000,
+  "maxSearchDays": 7
 }
 ```
 
@@ -164,6 +197,10 @@ Create `~/.claude-logs/config.json` to set defaults for all projects:
 | `excludeTools` | `[]` | Tools to exclude from logging |
 | `excludeProjects` | `[]` | Project paths to exclude from logging |
 | `debug` | `false` | Enable debug logging to stderr |
+| `blockOnFailure` | `false` | If `true`, exit non-zero on logging failure (blocks Claude) |
+| `maxRetries` | `3` | Number of retry attempts before giving up |
+| `retryDelayMs` | `2000` | Delay between retries in milliseconds |
+| `maxSearchDays` | `7` | Days to search when finding session files |
 
 ## Querying the Database
 

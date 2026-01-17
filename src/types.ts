@@ -72,7 +72,35 @@ export interface ReadToolInput {
   limit?: number;
 }
 
-export type ToolInput = BashToolInput | WriteToolInput | EditToolInput | ReadToolInput | Record<string, unknown>;
+export interface GlobToolInput {
+  pattern: string;
+  path?: string;
+}
+
+export interface GrepToolInput {
+  pattern: string;
+  path?: string;
+}
+
+export interface WebFetchToolInput {
+  url: string;
+  prompt?: string;
+}
+
+export interface WebSearchToolInput {
+  query: string;
+}
+
+export type ToolInput =
+  | BashToolInput
+  | WriteToolInput
+  | EditToolInput
+  | ReadToolInput
+  | GlobToolInput
+  | GrepToolInput
+  | WebFetchToolInput
+  | WebSearchToolInput
+  | Record<string, unknown>;
 
 // PreToolUse specific input
 export interface PreToolUseInput extends BaseHookInput {
@@ -210,4 +238,10 @@ export interface Config {
   excludeTools: string[];
   excludeProjects: string[];
   debug: boolean;
+  // Retry and failure handling
+  blockOnFailure: boolean;  // If true, exit non-zero on logging failure (blocks Claude)
+  maxRetries: number;       // Number of automatic retries before giving up (default: 3)
+  retryDelayMs: number;     // Delay between retries in milliseconds (default: 2000)
+  // Performance
+  maxSearchDays: number;    // Max days to search when looking for session files (default: 7)
 }

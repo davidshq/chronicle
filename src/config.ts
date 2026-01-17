@@ -15,6 +15,12 @@ const DEFAULT_CONFIG: Config = {
   excludeTools: [],
   excludeProjects: [],
   debug: false,
+  // Retry and failure handling defaults
+  blockOnFailure: false,  // Default: fail-safe, don't block Claude
+  maxRetries: 3,          // Try 3 times before giving up
+  retryDelayMs: 2000,     // 2 seconds between retries
+  // Performance
+  maxSearchDays: 7,       // Only search last 7 days for session files
 };
 
 let cachedConfig: Config | null = null;
@@ -87,4 +93,11 @@ export function debugLog(...args: unknown[]): void {
   if (getConfig().debug) {
     console.error("[claude-session-logger]", ...args);
   }
+}
+
+/**
+ * Get the path to the failed events file for manual retry
+ */
+export function getFailedEventsPath(): string {
+  return join(getConfig().logDir, ".failed-events.json");
 }

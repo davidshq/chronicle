@@ -1,0 +1,13 @@
+- Did you introduce any bugs or errors?
+- What about bad practices?
+- Was any functionality lost?
+- Do we need to DRY things up?
+- Are you overarchitecting for what the application actually needs?
+- Did you write any dangerous code? e.g., code that could accidentally delete system files or crash the entire system?
+- Run linting and formatting.
+- Are there any critical path tests we need to create or update?
+- Did you learn any important lessons during working with this code? If so, update the docs accordingly or create a new doc if an appropriate doc does not exist.
+- Look for code with high cyclomatic complexity.
+- We want to write good code but also pragmatic code, we should not be writing code that covers edge cases that are unlikely to ever happen.
+- In the process of debugging you often write crappy code or refactor code that doesn't need to be. Make sure you review all the changes you've made and revert any that are unnecessary and don't make a significant improvement.
+- Always give a pragmatic engineers opinion on whether these changes improve the code or are neutral/bad.

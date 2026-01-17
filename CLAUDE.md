@@ -79,31 +79,56 @@ SQLite at `~/.claude-logs/sessions.db` with tables: `sessions`, `messages`, `too
 
 File naming: `01_143045_b5bc68c9_claude-remember.md` = first session of the day, started at 14:30:45, session ID starting with b5bc68c9, in the claude-remember project.
 
-### Per-Project Configuration
+### Configuration
 
-Projects can have a `.claude-remember.json` in their root:
+**Global config** at `~/.claude-logs/config.json`:
+
+```json
+{
+  "logDir": "~/.claude-logs",
+  "includeToolOutputs": true,
+  "maxToolOutputLength": 2000,
+  "enableWAL": true,
+  "excludeTools": [],
+  "excludeProjects": [],
+  "debug": false,
+  "blockOnFailure": false,   // Exit non-zero on failure (blocks Claude)
+  "maxRetries": 3,           // Auto-retry attempts before giving up
+  "retryDelayMs": 2000,      // Delay between retries in ms
+  "maxSearchDays": 7         // Days to search when finding session files
+}
+```
+
+**Per-project config** at `.claude-remember.json` in project root:
 
 ```json
 {
   "enabled": true,      // Master switch (default: true)
-  "logDir": "/path",    // Custom log directory for markdown files and backups
-  "dbPath": "/path/db", // Custom SQLite database path
-  "markdown": true,     // Enable markdown logging (default: true)
-  "sqlite": true        // Enable SQLite logging (default: true)
+  "logDir": "/path",    // Custom log directory
+  "dbPath": "/path/db", // Custom SQLite path (for data isolation)
+  "markdown": true,     // Enable markdown logging
+  "sqlite": true        // Enable SQLite logging
 }
 ```
 
-- User can say "disable remember logging" to create this file with `enabled: false`
-- Custom `logDir` affects markdown files and transcript backups
-- Custom `dbPath` allows complete data isolation between projects (useful for client work)
-- Each handler checks `isMarkdownEnabled()` and `isSqliteEnabled()` before writing
-- The db.ts module caches multiple database connections by path
+Any global option can also be set per-project to override. User commands:
+- "disable remember logging" - creates config with `enabled: false`
+- "retry remember logging" - retries any failed events
+
+## Code Quality
+
+- **Check for deprecated APIs** - Before using Bun APIs, verify they aren't deprecated by checking type definitions (look for `@deprecated` JSDoc tags). Use `db.run()` not `db.exec()`, etc.
+- **Run type checker** - Use `bunx tsc --noEmit` to catch type errors before committing
+- **Run tests** - Use `bun test` to run the test suite (69 tests across 5 files)
+- **Strict mode enabled** - `tsconfig.json` has strict mode; don't use `any` types
 
 ## Key Design Decisions
 
 - **Bun runtime** - Sub-100ms startup time critical for hook performance
 - **No external dependencies** - Uses only Bun built-ins (`bun:sqlite`, native fs)
-- **Fail-safe** - Handler always exits 0 to never block Claude Code; errors logged to stderr
+- **Fail-safe** - Handler always exits 0 to never block Claude Code; errors logged to stderr (configurable with `blockOnFailure`)
+- **Automatic retry** - Failed logging attempts retry with configurable delay and max attempts
+- **Database corruption recovery** - Corrupt databases are backed up and recreated automatically
 - **Deduplication** - Tracks `lastAssistantContent` to avoid duplicate transcript parsing
 - **Cross-process recovery** - `ensureSession()` recreates missing session state if hooks fire out of order
 - **Local timezone for directories** - Date folders use local time (via `toLocaleDateString`) so "today's" sessions appear in today's folder; timestamps in DB/markdown remain UTC

@@ -107,7 +107,24 @@ function parseTranscriptEntry(entry: TranscriptMessage): ParsedMessage | null {
   };
 }
 
-function parseMessageFormat(entry: any): ParsedMessage | null {
+interface AlternativeTranscriptEntry {
+  uuid?: string;
+  timestamp?: string;
+  message?: {
+    role?: string;
+    content?: string | Array<{
+      type?: string;
+      text?: string;
+      id?: string;
+      name?: string;
+      input?: Record<string, unknown>;
+      tool_use_id?: string;
+      content?: string | unknown[];
+    }>;
+  };
+}
+
+function parseMessageFormat(entry: AlternativeTranscriptEntry): ParsedMessage | null {
   const { message, uuid, timestamp } = entry;
 
   if (!message?.role || !message?.content) {
@@ -151,22 +168,6 @@ function parseMessageFormat(entry: any): ParsedMessage | null {
     toolCalls,
     toolResults,
   };
-}
-
-// Get only new messages since last processed UUID
-export function getNewMessages(transcriptPath: string, lastProcessedUuid?: string): ParsedMessage[] {
-  const allMessages = parseTranscript(transcriptPath);
-
-  if (!lastProcessedUuid) {
-    return allMessages;
-  }
-
-  const lastIndex = allMessages.findIndex((m) => m.uuid === lastProcessedUuid);
-  if (lastIndex === -1) {
-    return allMessages;
-  }
-
-  return allMessages.slice(lastIndex + 1);
 }
 
 // Extract assistant's text response from the latest messages

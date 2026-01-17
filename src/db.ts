@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { existsSync, renameSync } from "fs";
 import { getConfig, debugLog } from "./config";
 import type { SessionRecord, MessageRecord, ToolCallRecord } from "./types";
 
@@ -81,6 +82,10 @@ CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
 `;
 
+/**
+ * Opens (or creates) the SQLite database, with graceful handling of corruption.
+ * If the database file is corrupt, it's backed up and a fresh database is created.
+ */
 export function getDatabase(customDbPath?: string | null): Database {
   const config = getConfig();
   const dbPath = customDbPath || config.dbPath;
@@ -93,25 +98,86 @@ export function getDatabase(customDbPath?: string | null): Database {
 
   debugLog("Opening database at:", dbPath);
 
-  const db = new Database(dbPath, { create: true });
-
-  // Enable WAL mode for better concurrent access
-  if (config.enableWAL) {
-    db.exec("PRAGMA journal_mode = WAL");
-  }
-
-  // Create tables
-  db.exec(SCHEMA);
-
-  // Migration: add markdown_path column if it doesn't exist (for existing databases)
+  let db: Database;
   try {
-    db.exec("ALTER TABLE sessions ADD COLUMN markdown_path TEXT");
-  } catch (e) {
-    // Column already exists, ignore
+    db = openAndInitializeDatabase(dbPath, config.enableWAL);
+  } catch (error) {
+    // Database might be corrupt - attempt recovery
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error(`[claude-remember] Database error: ${errorMessage}`);
+
+    if (existsSync(dbPath)) {
+      // Backup the corrupt database
+      const backupPath = `${dbPath}.corrupt.${Date.now()}`;
+      try {
+        renameSync(dbPath, backupPath);
+        console.error(`[claude-remember] Backed up corrupt database to: ${backupPath}`);
+
+        // Also backup any WAL/SHM files
+        const walPath = `${dbPath}-wal`;
+        const shmPath = `${dbPath}-shm`;
+        if (existsSync(walPath)) {
+          renameSync(walPath, `${backupPath}-wal`);
+        }
+        if (existsSync(shmPath)) {
+          renameSync(shmPath, `${backupPath}-shm`);
+        }
+      } catch (backupError) {
+        console.error(`[claude-remember] Failed to backup corrupt database: ${backupError}`);
+      }
+
+      // Try to create a fresh database
+      try {
+        db = openAndInitializeDatabase(dbPath, config.enableWAL);
+        console.error("[claude-remember] Created fresh database after corruption recovery");
+      } catch (retryError) {
+        // If we still can't create a database, re-throw
+        throw new Error(`Failed to recover from database corruption: ${retryError}`);
+      }
+    } else {
+      // No existing file, re-throw original error
+      throw error;
+    }
   }
 
   // Cache the database
   databases.set(dbPath, db);
+
+  return db;
+}
+
+/**
+ * Opens a database and initializes the schema.
+ * Throws if the database is corrupt or unreadable.
+ */
+function openAndInitializeDatabase(dbPath: string, enableWAL: boolean): Database {
+  const db = new Database(dbPath, { create: true });
+
+  // Enable WAL mode for better concurrent access
+  if (enableWAL) {
+    db.run("PRAGMA journal_mode = WAL");
+  }
+
+  // Run an integrity check on existing databases to catch corruption early
+  // Skip this for new databases (no tables yet)
+  const tables = db.query("SELECT name FROM sqlite_master WHERE type='table'").all();
+  if (tables.length > 0) {
+    const integrityResult = db.query("PRAGMA integrity_check").get() as { integrity_check: string } | null;
+    if (integrityResult && integrityResult.integrity_check !== "ok") {
+      db.close();
+      throw new Error(`Database integrity check failed: ${integrityResult.integrity_check}`);
+    }
+  }
+
+  // Create tables
+  db.run(SCHEMA);
+
+  // Migration: add markdown_path column if it doesn't exist (for existing databases)
+  try {
+    db.run("ALTER TABLE sessions ADD COLUMN markdown_path TEXT");
+  } catch (e) {
+    // Column already exists, ignore
+  }
 
   return db;
 }
@@ -221,17 +287,6 @@ export function getSessionMessages(sessionId: string, dbPath?: string | null): M
   return stmt.all(sessionId) as MessageRecord[];
 }
 
-export function messageExists(sessionId: string, timestamp: string, role: string, contentPrefix: string, dbPath?: string | null): boolean {
-  const db = getDatabase(dbPath);
-  const stmt = db.prepare(`
-    SELECT 1 FROM messages
-    WHERE session_id = ? AND timestamp = ? AND role = ? AND content LIKE ?
-    LIMIT 1
-  `);
-  const result = stmt.get(sessionId, timestamp, role, contentPrefix + "%");
-  return result !== null;
-}
-
 // Tool call operations
 export function insertToolCall(toolCall: ToolCallRecord, dbPath?: string | null): number {
   const db = getDatabase(dbPath);
@@ -252,12 +307,13 @@ export function insertToolCall(toolCall: ToolCallRecord, dbPath?: string | null)
   return Number(result.lastInsertRowid);
 }
 
-export function updateToolCallSuccess(sessionId: string, toolName: string, toolUseId: string, success: boolean, dbPath?: string | null): void {
+export function updateToolCallSuccess(sessionId: string, toolName: string, _toolUseId: string, success: boolean, durationMs: number | null, dbPath?: string | null): void {
   const db = getDatabase(dbPath);
-  // Update the most recent tool call matching these criteria
+  // Update the most recent tool call matching session and tool name
+  // Note: _toolUseId is available but tool_calls table doesn't store it, so we match by recency
   const stmt = db.prepare(`
     UPDATE tool_calls
-    SET success = ?
+    SET success = ?, duration_ms = ?
     WHERE id = (
       SELECT id FROM tool_calls
       WHERE session_id = ? AND tool_name = ?
@@ -265,7 +321,7 @@ export function updateToolCallSuccess(sessionId: string, toolName: string, toolU
       LIMIT 1
     )
   `);
-  stmt.run(success ? 1 : 0, sessionId, toolName);
+  stmt.run(success ? 1 : 0, durationMs, sessionId, toolName);
 }
 
 // Analytics queries
@@ -284,7 +340,8 @@ export function getToolUsageStats(sessionId?: string, dbPath?: string | null): A
   query += " GROUP BY tool_name ORDER BY count DESC";
 
   const stmt = db.prepare(query);
-  return sessionId ? stmt.all(sessionId) as any : stmt.all() as any;
+  type ToolStats = { tool_name: string; count: number; success_rate: number };
+  return (sessionId ? stmt.all(sessionId) : stmt.all()) as ToolStats[];
 }
 
 export function getRecentSessions(limit: number = 10, dbPath?: string | null): SessionRecord[] {
