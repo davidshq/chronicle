@@ -393,7 +393,7 @@ async function handleSessionEnd(input: SessionEndInput): Promise<void> {
 
   // Cleanup state
   sessionState.delete(session_id);
-  closeDatabase();
+  // Note: Database is closed in main() finally block
 }
 
 async function handleUserPromptSubmit(input: UserPromptSubmitInput): Promise<HookOutput | void> {
@@ -888,13 +888,14 @@ async function processEvent(input: HookInput): Promise<HookOutput | undefined> {
 async function main(): Promise<void> {
   // Start with global config, will get project-specific after parsing input
   let config = getConfig();
+  let exitCode = 0;
 
   try {
     // Read hook input from stdin
     const stdinContent = await readStdin();
     if (!stdinContent.trim()) {
       debugLog("No stdin content received");
-      process.exit(0);
+      return; // Will exit via finally block
     }
 
     const input: HookInput = JSON.parse(stdinContent);
@@ -932,7 +933,7 @@ async function main(): Promise<void> {
         console.log(JSON.stringify({
           result: `[Claude Remember] Logging failed after ${config.maxRetries} attempts. Say "retry remember logging" to retry, or check ~/.claude-logs/.failed-events.json`,
         }));
-        process.exit(1); // Non-zero exit blocks the hook
+        exitCode = 1; // Non-zero exit blocks the hook
       } else {
         // Fail-safe mode: warn but don't block
         console.error("[claude-remember] Continuing despite failure (blockOnFailure=false).");
@@ -943,19 +944,19 @@ async function main(): Promise<void> {
     if (output) {
       console.log(JSON.stringify(output));
     }
-
-    // Success - exit cleanly
-    process.exit(0);
   } catch (error) {
     // Parse error or other critical failure
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error("[claude-remember] Critical error:", errorMessage);
 
     if (config.blockOnFailure) {
-      process.exit(1);
-    } else {
-      process.exit(0); // Exit 0 to not block Claude (fail-safe)
+      exitCode = 1;
     }
+  } finally {
+    // CRITICAL: Always close the database before exiting
+    // This ensures WAL checkpoints are written and locks are released
+    closeDatabase();
+    process.exit(exitCode);
   }
 }
 

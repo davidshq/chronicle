@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { unlinkSync, existsSync } from "fs";
+import { unlinkSync, existsSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import {
   getDatabase,
@@ -59,6 +59,26 @@ describe("database initialization", () => {
     const db1 = getDatabase(TEST_DB_PATH);
     const db2 = getDatabase(TEST_DB_PATH);
     expect(db1).toBe(db2);
+  });
+
+  test("sets busy_timeout PRAGMA for concurrent access", () => {
+    const db = getDatabase(TEST_DB_PATH);
+    const result = db.query("PRAGMA busy_timeout").get() as { timeout: number };
+    // Must be set to a reasonable value (we use 5000ms)
+    expect(result.timeout).toBeGreaterThanOrEqual(5000);
+  });
+
+  test("enables WAL mode by default", () => {
+    const db = getDatabase(TEST_DB_PATH);
+    const result = db.query("PRAGMA journal_mode").get() as { journal_mode: string };
+    expect(result.journal_mode.toLowerCase()).toBe("wal");
+  });
+
+  test("sets synchronous to NORMAL with WAL mode", () => {
+    const db = getDatabase(TEST_DB_PATH);
+    // NORMAL = 1, FULL = 2, OFF = 0
+    const result = db.query("PRAGMA synchronous").get() as { synchronous: number };
+    expect(result.synchronous).toBe(1); // NORMAL
   });
 });
 
@@ -333,4 +353,95 @@ describe("event operations", () => {
     expect(events[0].event_type).toBe("notification");
     expect(events[1].event_type).toBe("pre_compact");
   });
+});
+
+describe("concurrent access", () => {
+  const TEST_PROJECT_DIR = join(import.meta.dir, ".test-concurrent-project");
+  const CONCURRENT_DB_PATH = join(TEST_PROJECT_DIR, "test.db");
+  const CONCURRENT_LOG_DIR = join(TEST_PROJECT_DIR, "logs");
+
+  beforeEach(() => {
+    // Create test project directory with config
+    mkdirSync(TEST_PROJECT_DIR, { recursive: true });
+    mkdirSync(CONCURRENT_LOG_DIR, { recursive: true });
+
+    // Create project config that redirects DB to our test location
+    writeFileSync(
+      join(TEST_PROJECT_DIR, ".claude-remember.json"),
+      JSON.stringify({
+        enabled: true,
+        dbPath: CONCURRENT_DB_PATH,
+        logDir: CONCURRENT_LOG_DIR,
+        markdown: false,  // Disable markdown to focus on DB testing
+      })
+    );
+  });
+
+  afterEach(() => {
+    // Clean up entire test directory
+    if (existsSync(TEST_PROJECT_DIR)) {
+      rmSync(TEST_PROJECT_DIR, { recursive: true, force: true });
+    }
+  });
+
+  test("handles multiple concurrent writes without corruption", async () => {
+    // This test spawns multiple processes that write to the same database
+    // simultaneously, simulating the real hook scenario
+    const PROCESS_COUNT = 5;
+    const handlerPath = join(import.meta.dir, "..", "handler.ts");
+
+    // Create the session first so concurrent writes have something to reference
+    const initEvent = JSON.stringify({
+      hook_event_name: "SessionStart",
+      session_id: "concurrent-test-session",
+      cwd: TEST_PROJECT_DIR,
+      source: "startup",
+    });
+
+    const initProc = Bun.spawn(["bun", "run", handlerPath], {
+      stdin: new Blob([initEvent]),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    await initProc.exited;
+
+    // Now spawn multiple concurrent processes
+    const processes = [];
+    for (let i = 0; i < PROCESS_COUNT; i++) {
+      const event = JSON.stringify({
+        hook_event_name: "PreToolUse",
+        session_id: "concurrent-test-session",
+        cwd: TEST_PROJECT_DIR,
+        tool_name: `ConcurrentTool${i}`,
+        tool_input: { index: i },
+      });
+
+      const proc = Bun.spawn(["bun", "run", handlerPath], {
+        stdin: new Blob([event]),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      processes.push(proc);
+    }
+
+    // Wait for all processes to complete
+    const exitCodes = await Promise.all(processes.map(p => p.exited));
+
+    // All processes should exit successfully (code 0)
+    for (let i = 0; i < exitCodes.length; i++) {
+      expect(exitCodes[i]).toBe(0);
+    }
+
+    // Verify the database is not corrupted
+    const { Database } = await import("bun:sqlite");
+    const db = new Database(CONCURRENT_DB_PATH, { readonly: true });
+    const integrityResult = db.query("PRAGMA integrity_check").get() as { integrity_check: string };
+    expect(integrityResult.integrity_check).toBe("ok");
+
+    // Verify all tool calls were recorded
+    const toolCalls = db.query("SELECT COUNT(*) as count FROM tool_calls WHERE session_id = ?").get("concurrent-test-session") as { count: number };
+    expect(toolCalls.count).toBe(PROCESS_COUNT);
+
+    db.close();
+  }, 30000); // 30 second timeout for this test
 });

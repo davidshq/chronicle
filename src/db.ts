@@ -153,9 +153,16 @@ export function getDatabase(customDbPath?: string | null): Database {
 function openAndInitializeDatabase(dbPath: string, enableWAL: boolean): Database {
   const db = new Database(dbPath, { create: true });
 
+  // CRITICAL: Set busy timeout FIRST, before any other operations
+  // This makes SQLite wait up to 5 seconds when the database is locked
+  // instead of immediately failing with "database is locked"
+  db.run("PRAGMA busy_timeout = 5000");
+
   // Enable WAL mode for better concurrent access
   if (enableWAL) {
     db.run("PRAGMA journal_mode = WAL");
+    // NORMAL is safe with WAL and improves performance
+    db.run("PRAGMA synchronous = NORMAL");
   }
 
   // Run an integrity check on existing databases to catch corruption early
