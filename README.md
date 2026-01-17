@@ -71,6 +71,23 @@ You can also use natural language: "disable remember logging", "enable remember 
 | `/claude-remember:search <query>` | Search past sessions by keyword |
 | `/claude-remember:today` | List all sessions from today |
 
+### Updating
+
+To get the latest version of the plugin:
+
+```bash
+claude plugin marketplace update claude-remember
+```
+
+Or use the slash command:
+```
+/plugin marketplace update claude-remember
+```
+
+This pulls the latest changes from GitHub. The update takes effect on your next Claude Code session.
+
+**Note:** Third-party plugins (like this one) don't auto-update by default. You can enable auto-updates for this marketplace in Claude Code settings, or run the update command periodically.
+
 ### Uninstall
 
 ```bash
