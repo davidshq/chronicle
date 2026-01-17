@@ -391,6 +391,86 @@ describe("handler integration", () => {
 });
 
 describe("project config handling", () => {
+  test("custom logDir and dbPath work across separate processes", async () => {
+    // This test verifies the fix for the bug where markdown logging failed
+    // when a project used custom logDir/dbPath. Each runHandler() call is a
+    // separate process, simulating real hook invocations.
+
+    const customLogDir = join(TEST_PROJECT_DIR, "custom-logs");
+    const customDbPath = join(customLogDir, "custom.db");
+    mkdirSync(customLogDir, { recursive: true });
+
+    // Configure custom paths
+    writeFileSync(TEST_CONFIG_PATH, JSON.stringify({
+      logDir: customLogDir,
+      dbPath: customDbPath,
+    }));
+
+    const sessionId = "custom-path-session-" + Date.now();
+
+    // Process 1: SessionStart - creates session and markdown file
+    await runHandler({
+      hook_event_name: "SessionStart",
+      session_id: sessionId,
+      cwd: TEST_PROJECT_DIR,
+      source: "startup",
+      transcript_path: "/tmp/transcript.jsonl",
+      permission_mode: "default",
+    });
+
+    // Process 2: UserPromptSubmit - should find markdown file and append
+    await runHandler({
+      hook_event_name: "UserPromptSubmit",
+      session_id: sessionId,
+      cwd: TEST_PROJECT_DIR,
+      prompt: "Test message for custom path",
+      transcript_path: "/tmp/transcript.jsonl",
+      permission_mode: "default",
+    });
+
+    // Process 3: PreToolUse - should also append to markdown
+    await runHandler({
+      hook_event_name: "PreToolUse",
+      session_id: sessionId,
+      cwd: TEST_PROJECT_DIR,
+      tool_name: "Bash",
+      tool_input: { command: "echo hello" },
+      tool_use_id: "tool-custom-1",
+      transcript_path: "/tmp/transcript.jsonl",
+      permission_mode: "default",
+    });
+
+    // Verify: Find the markdown file in custom location
+    const sessionsDir = join(customLogDir, "sessions");
+    expect(existsSync(sessionsDir)).toBe(true);
+
+    const dateDirs = require("fs").readdirSync(sessionsDir);
+    expect(dateDirs.length).toBeGreaterThan(0);
+
+    const dateDir = join(sessionsDir, dateDirs[0]);
+    const mdFiles = require("fs").readdirSync(dateDir).filter((f: string) => f.endsWith(".md"));
+    expect(mdFiles.length).toBeGreaterThan(0);
+
+    // Find the file for our session
+    const sessionFile = mdFiles.find((f: string) => f.includes(sessionId.substring(0, 8)));
+    expect(sessionFile).toBeDefined();
+
+    // Verify markdown content includes the user message and tool call
+    const mdContent = readFileSync(join(dateDir, sessionFile!), "utf-8");
+    expect(mdContent).toContain("Test message for custom path");
+    expect(mdContent).toContain("Bash");
+    expect(mdContent).toContain("echo hello");
+
+    // Verify: Check that markdown_path is stored in custom database
+    const Database = require("bun:sqlite").Database;
+    const db = new Database(customDbPath, { readonly: true });
+    const session = db.prepare("SELECT markdown_path FROM sessions WHERE id = ?").get(sessionId);
+    db.close();
+
+    expect(session).toBeDefined();
+    expect(session.markdown_path).toContain(customLogDir);
+  });
+
   test("respects markdown: false config", async () => {
     writeFileSync(TEST_CONFIG_PATH, JSON.stringify({ markdown: false }));
 
