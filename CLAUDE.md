@@ -54,10 +54,10 @@ claude-remember/
 │   ├── config.ts             # Configuration loading
 │   └── types.ts              # TypeScript interfaces
 ├── scripts/
-│   ├── install.ts            # Plugin installer
-│   └── uninstall.ts          # Plugin uninstaller
+│   └── bump-version.ts       # Version management (bun run version)
 └── docs/
     ├── ARCHITECTURE.md       # System architecture
+    ├── DEVELOPMENT.md        # Developer guide
     └── PLUGIN-BEST-PRACTICES.md  # Guide to writing plugins
 ```
 
@@ -159,7 +159,7 @@ Any global option can also be set per-project to override.
 
 - **Check for deprecated APIs** - Before using Bun APIs, verify they aren't deprecated by checking type definitions (look for `@deprecated` JSDoc tags). Use `db.run()` not `db.exec()`, etc.
 - **Run type checker** - Use `bunx tsc --noEmit` to catch type errors before committing
-- **Run tests** - Use `bun test` to run the test suite (69 tests across 5 files)
+- **Run tests** - Use `bun test` to run the test suite (80 tests across 5 files)
 - **Strict mode enabled** - `tsconfig.json` has strict mode; don't use `any` types
 
 ## Key Design Decisions
