@@ -17,25 +17,37 @@ Works with both **CLI** and **VS Code extension** - they share the same configur
 curl -fsSL https://bun.sh/install | bash
 ```
 
-### Install the Plugin
+### Install from GitHub (Recommended)
 
 ```bash
-# Clone or download this repository
-cd /path/to/claude-remember
+# Add the marketplace
+claude plugin marketplace add davidshq/claude-remember
+
+# Install the plugin
+claude plugin install claude-remember@claude-remember
+```
+
+Or use slash commands in Claude Code:
+```
+/plugin marketplace add davidshq/claude-remember
+/plugin install claude-remember@claude-remember
+```
+
+### Install for Development
+
+If you want to modify the plugin or contribute:
+
+```bash
+# Clone the repository
+git clone https://github.com/davidshq/claude-remember.git
+cd claude-remember
 
 # Install dependencies
 bun install
 
-# Run the installation script
-bun run install-hooks
+# Test with the plugin loaded
+claude --plugin-dir .
 ```
-
-This will:
-1. Create a symlink at `~/.claude/plugins/claude-remember`
-2. Enable the plugin in `~/.claude/settings.json`
-3. Remove any legacy hooks from previous installations
-
-After installation, you'll see `claude-remember@local` in your enabled plugins.
 
 ### Slash Commands
 
@@ -62,10 +74,15 @@ You can also use natural language: "disable remember logging", "enable remember 
 ### Uninstall
 
 ```bash
-bun run uninstall-hooks
+claude plugin uninstall claude-remember@claude-remember
 ```
 
-This removes the plugin symlink and disables it, but preserves your log files.
+Or use the slash command:
+```
+/plugin uninstall claude-remember@claude-remember
+```
+
+This removes the plugin but preserves your log files in `~/.claude-logs/`.
 
 ## Output
 

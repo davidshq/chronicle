@@ -1,6 +1,7 @@
 ---
 description: Search past Claude sessions by keyword
-argument_name: query
+argument-hint: [query]
+allowed-tools: Read, Bash(sqlite3:*), Grep
 ---
 
 Search past Claude sessions for: $ARGUMENTS

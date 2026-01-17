@@ -8,19 +8,24 @@ Claude Session Logger is a **Claude Code plugin** that intercepts all conversati
 1. **Markdown files** - Human-readable logs organized by date and session
 2. **SQLite database** - Structured, queryable storage for analytics
 
-The plugin is installed as a symlink at `~/.claude/plugins/claude-remember` and registered in `enabledPlugins` as `claude-remember@local`.
+The plugin is distributed via GitHub marketplace and installed with:
+```
+claude plugin marketplace add davidshq/claude-remember
+claude plugin install claude-remember@claude-remember
+```
 
 ## Commands
 
 ```bash
-# Install dependencies
-bun install
+# Install the plugin (users)
+claude plugin marketplace add davidshq/claude-remember
+claude plugin install claude-remember@claude-remember
 
-# Install plugin (creates symlink, enables in settings.json)
-bun run install-hooks
+# Uninstall
+claude plugin uninstall claude-remember@claude-remember
 
-# Uninstall plugin (removes symlink, disables, preserves log files)
-bun run uninstall-hooks
+# Development: test with plugin loaded locally
+claude --plugin-dir .
 
 # Run tests
 bun test
@@ -48,9 +53,12 @@ claude-remember/
 │   ├── transcript.ts         # Transcript parsing
 │   ├── config.ts             # Configuration loading
 │   └── types.ts              # TypeScript interfaces
-└── scripts/
-    ├── install.ts            # Plugin installer
-    └── uninstall.ts          # Plugin uninstaller
+├── scripts/
+│   ├── install.ts            # Plugin installer
+│   └── uninstall.ts          # Plugin uninstaller
+└── docs/
+    ├── ARCHITECTURE.md       # System architecture
+    └── PLUGIN-BEST-PRACTICES.md  # Guide to writing plugins
 ```
 
 ## Architecture

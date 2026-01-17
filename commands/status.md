@@ -1,5 +1,6 @@
 ---
 description: Show claude-remember logging status and recent sessions
+allowed-tools: Read, Bash(sqlite3:*), Glob
 ---
 
 Check the claude-remember session logging status:

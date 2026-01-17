@@ -1,5 +1,6 @@
 ---
 description: Show all Claude sessions from today
+allowed-tools: Read, Bash(sqlite3:*), Glob
 ---
 
 List all Claude Code sessions from today.
