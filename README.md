@@ -93,7 +93,55 @@ Located at `~/.claude-logs/sessions.db` with three tables:
 
 ## Configuration
 
-Create `~/.claude-logs/config.json` to customize:
+### Per-Project Configuration
+
+Create a `.claude-remember.json` file in any project root to configure logging for that project:
+
+```json
+{
+  "enabled": true,
+  "logDir": "/path/to/custom-logs",
+  "dbPath": "/path/to/custom-logs/sessions.db",
+  "markdown": true,
+  "sqlite": true
+}
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `true` | Master switch - set to `false` to disable all logging |
+| `logDir` | `~/.claude-logs` | Custom directory for this project's markdown logs and backups |
+| `dbPath` | `~/.claude-logs/sessions.db` | Custom path for this project's SQLite database |
+| `markdown` | `true` | Enable markdown file logging |
+| `sqlite` | `true` | Enable SQLite database logging |
+
+**Example configurations:**
+
+```json
+// Markdown only (no database)
+{"sqlite": false}
+
+// SQLite only (no markdown files)
+{"markdown": false}
+
+// Custom location for this project's logs (markdown + SQLite)
+{"logDir": "/path/to/project-logs", "dbPath": "/path/to/project-logs/sessions.db"}
+
+// Completely isolated logging (keeps client data separate)
+{
+  "logDir": "/path/to/client-a/logs",
+  "dbPath": "/path/to/client-a/logs/sessions.db"
+}
+
+// Disable logging entirely for this project
+{"enabled": false}
+```
+
+**Disabling via command:** Say "disable remember logging" in any Claude session to create a `.claude-remember.json` with `enabled: false`.
+
+### Global Configuration
+
+Create `~/.claude-logs/config.json` to set defaults for all projects:
 
 ```json
 {
@@ -107,11 +155,9 @@ Create `~/.claude-logs/config.json` to customize:
 }
 ```
 
-### Options
-
 | Option | Default | Description |
 |--------|---------|-------------|
-| `logDir` | `~/.claude-logs` | Directory for all log files |
+| `logDir` | `~/.claude-logs` | Default directory for log files |
 | `includeToolOutputs` | `true` | Include full tool outputs in markdown |
 | `maxToolOutputLength` | `2000` | Truncate tool outputs longer than this |
 | `enableWAL` | `true` | Use SQLite WAL mode for better concurrency |

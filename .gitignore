@@ -16,10 +16,5 @@ dist/
 .DS_Store
 Thumbs.db
 
-# Logs (don't commit actual logs)
-*.db
-*.db-wal
-*.db-shm
-
 # Test artifacts
 coverage/

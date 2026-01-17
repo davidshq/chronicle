@@ -2,7 +2,8 @@ import { Database } from "bun:sqlite";
 import { getConfig, debugLog } from "./config";
 import type { SessionRecord, MessageRecord, ToolCallRecord } from "./types";
 
-let db: Database | null = null;
+// Cache of databases by path - supports multiple project-specific databases
+const databases = new Map<string, Database>();
 
 const SCHEMA = `
 -- Sessions table
@@ -80,15 +81,19 @@ CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
 `;
 
-export function getDatabase(): Database {
-  if (db) {
-    return db;
+export function getDatabase(customDbPath?: string | null): Database {
+  const config = getConfig();
+  const dbPath = customDbPath || config.dbPath;
+
+  // Check cache first
+  const cached = databases.get(dbPath);
+  if (cached) {
+    return cached;
   }
 
-  const config = getConfig();
-  debugLog("Opening database at:", config.dbPath);
+  debugLog("Opening database at:", dbPath);
 
-  db = new Database(config.dbPath, { create: true });
+  const db = new Database(dbPath, { create: true });
 
   // Enable WAL mode for better concurrent access
   if (config.enableWAL) {
@@ -105,19 +110,23 @@ export function getDatabase(): Database {
     // Column already exists, ignore
   }
 
+  // Cache the database
+  databases.set(dbPath, db);
+
   return db;
 }
 
 export function closeDatabase(): void {
-  if (db) {
+  for (const [path, db] of databases) {
+    debugLog("Closing database:", path);
     db.close();
-    db = null;
   }
+  databases.clear();
 }
 
 // Session operations
-export function createSession(session: Omit<SessionRecord, "ended_at" | "summary" | "message_count" | "markdown_path"> & { markdown_path?: string | null }): void {
-  const db = getDatabase();
+export function createSession(session: Omit<SessionRecord, "ended_at" | "summary" | "message_count" | "markdown_path"> & { markdown_path?: string | null }, dbPath?: string | null): void {
+  const db = getDatabase(dbPath);
   const stmt = db.prepare(`
     INSERT OR REPLACE INTO sessions (id, project_path, started_at, status, interface, markdown_path)
     VALUES (?, ?, ?, ?, ?, ?)
@@ -133,8 +142,8 @@ export function createSession(session: Omit<SessionRecord, "ended_at" | "summary
   debugLog("Created session:", session.id);
 }
 
-export function updateSessionMarkdownPath(sessionId: string, markdownPath: string): void {
-  const db = getDatabase();
+export function updateSessionMarkdownPath(sessionId: string, markdownPath: string, dbPath?: string | null): void {
+  const db = getDatabase(dbPath);
   const stmt = db.prepare(`
     UPDATE sessions
     SET markdown_path = ?
@@ -144,15 +153,15 @@ export function updateSessionMarkdownPath(sessionId: string, markdownPath: strin
   debugLog("Updated session markdown path:", sessionId, markdownPath);
 }
 
-export function getSessionMarkdownPath(sessionId: string): string | null {
-  const db = getDatabase();
+export function getSessionMarkdownPath(sessionId: string, dbPath?: string | null): string | null {
+  const db = getDatabase(dbPath);
   const stmt = db.prepare("SELECT markdown_path FROM sessions WHERE id = ?");
   const result = stmt.get(sessionId) as { markdown_path: string | null } | null;
   return result?.markdown_path || null;
 }
 
-export function updateSessionEnd(sessionId: string, reason: string): void {
-  const db = getDatabase();
+export function updateSessionEnd(sessionId: string, reason: string, dbPath?: string | null): void {
+  const db = getDatabase(dbPath);
   const status = reason === "logout" || reason === "prompt_input_exit" ? "completed" : "interrupted";
   const stmt = db.prepare(`
     UPDATE sessions
@@ -163,14 +172,14 @@ export function updateSessionEnd(sessionId: string, reason: string): void {
   debugLog("Updated session end:", sessionId, status);
 }
 
-export function getSession(sessionId: string): SessionRecord | null {
-  const db = getDatabase();
+export function getSession(sessionId: string, dbPath?: string | null): SessionRecord | null {
+  const db = getDatabase(dbPath);
   const stmt = db.prepare("SELECT * FROM sessions WHERE id = ?");
   return stmt.get(sessionId) as SessionRecord | null;
 }
 
-export function incrementMessageCount(sessionId: string): void {
-  const db = getDatabase();
+export function incrementMessageCount(sessionId: string, dbPath?: string | null): void {
+  const db = getDatabase(dbPath);
   const stmt = db.prepare(`
     UPDATE sessions
     SET message_count = message_count + 1
@@ -180,8 +189,8 @@ export function incrementMessageCount(sessionId: string): void {
 }
 
 // Message operations
-export function insertMessage(message: MessageRecord): number {
-  const db = getDatabase();
+export function insertMessage(message: MessageRecord, dbPath?: string | null): number {
+  const db = getDatabase(dbPath);
   const stmt = db.prepare(`
     INSERT INTO messages (session_id, timestamp, role, content, tool_name, tool_input, tool_output)
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -196,14 +205,14 @@ export function insertMessage(message: MessageRecord): number {
     message.tool_output
   );
 
-  incrementMessageCount(message.session_id);
+  incrementMessageCount(message.session_id, dbPath);
   debugLog("Inserted message:", message.role, "for session:", message.session_id);
 
   return Number(result.lastInsertRowid);
 }
 
-export function getSessionMessages(sessionId: string): MessageRecord[] {
-  const db = getDatabase();
+export function getSessionMessages(sessionId: string, dbPath?: string | null): MessageRecord[] {
+  const db = getDatabase(dbPath);
   const stmt = db.prepare(`
     SELECT * FROM messages
     WHERE session_id = ?
@@ -212,8 +221,8 @@ export function getSessionMessages(sessionId: string): MessageRecord[] {
   return stmt.all(sessionId) as MessageRecord[];
 }
 
-export function messageExists(sessionId: string, timestamp: string, role: string, contentPrefix: string): boolean {
-  const db = getDatabase();
+export function messageExists(sessionId: string, timestamp: string, role: string, contentPrefix: string, dbPath?: string | null): boolean {
+  const db = getDatabase(dbPath);
   const stmt = db.prepare(`
     SELECT 1 FROM messages
     WHERE session_id = ? AND timestamp = ? AND role = ? AND content LIKE ?
@@ -224,8 +233,8 @@ export function messageExists(sessionId: string, timestamp: string, role: string
 }
 
 // Tool call operations
-export function insertToolCall(toolCall: ToolCallRecord): number {
-  const db = getDatabase();
+export function insertToolCall(toolCall: ToolCallRecord, dbPath?: string | null): number {
+  const db = getDatabase(dbPath);
   const stmt = db.prepare(`
     INSERT INTO tool_calls (session_id, message_id, timestamp, tool_name, input_summary, success, duration_ms)
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -243,8 +252,8 @@ export function insertToolCall(toolCall: ToolCallRecord): number {
   return Number(result.lastInsertRowid);
 }
 
-export function updateToolCallSuccess(sessionId: string, toolName: string, toolUseId: string, success: boolean): void {
-  const db = getDatabase();
+export function updateToolCallSuccess(sessionId: string, toolName: string, toolUseId: string, success: boolean, dbPath?: string | null): void {
+  const db = getDatabase(dbPath);
   // Update the most recent tool call matching these criteria
   const stmt = db.prepare(`
     UPDATE tool_calls
@@ -260,8 +269,8 @@ export function updateToolCallSuccess(sessionId: string, toolName: string, toolU
 }
 
 // Analytics queries
-export function getToolUsageStats(sessionId?: string): Array<{ tool_name: string; count: number; success_rate: number }> {
-  const db = getDatabase();
+export function getToolUsageStats(sessionId?: string, dbPath?: string | null): Array<{ tool_name: string; count: number; success_rate: number }> {
+  const db = getDatabase(dbPath);
   let query = `
     SELECT
       tool_name,
@@ -278,8 +287,8 @@ export function getToolUsageStats(sessionId?: string): Array<{ tool_name: string
   return sessionId ? stmt.all(sessionId) as any : stmt.all() as any;
 }
 
-export function getRecentSessions(limit: number = 10): SessionRecord[] {
-  const db = getDatabase();
+export function getRecentSessions(limit: number = 10, dbPath?: string | null): SessionRecord[] {
+  const db = getDatabase(dbPath);
   const stmt = db.prepare(`
     SELECT * FROM sessions
     ORDER BY started_at DESC
@@ -300,8 +309,8 @@ export interface EventRecord {
   metadata: string | null;
 }
 
-export function insertEvent(event: EventRecord): number {
-  const db = getDatabase();
+export function insertEvent(event: EventRecord, dbPath?: string | null): number {
+  const db = getDatabase(dbPath);
   const stmt = db.prepare(`
     INSERT INTO events (session_id, timestamp, event_type, subtype, tool_name, message, metadata)
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -329,8 +338,8 @@ export interface TranscriptBackupRecord {
   backup_path: string | null;
 }
 
-export function insertTranscriptBackup(backup: TranscriptBackupRecord): number {
-  const db = getDatabase();
+export function insertTranscriptBackup(backup: TranscriptBackupRecord, dbPath?: string | null): number {
+  const db = getDatabase(dbPath);
   const stmt = db.prepare(`
     INSERT INTO transcript_backups (session_id, timestamp, trigger, transcript_path, backup_path)
     VALUES (?, ?, ?, ?, ?)
@@ -346,12 +355,19 @@ export function insertTranscriptBackup(backup: TranscriptBackupRecord): number {
   return Number(result.lastInsertRowid);
 }
 
-export function getSessionEvents(sessionId: string): EventRecord[] {
-  const db = getDatabase();
+export function getSessionEvents(sessionId: string, dbPath?: string | null): EventRecord[] {
+  const db = getDatabase(dbPath);
   const stmt = db.prepare(`
     SELECT * FROM events
     WHERE session_id = ?
     ORDER BY timestamp ASC
   `);
   return stmt.all(sessionId) as EventRecord[];
+}
+
+// Check if we have any previous sessions for a project (to determine if it's "new")
+export function hasProjectSessions(projectPath: string, dbPath?: string | null): boolean {
+  const db = getDatabase(dbPath);
+  const stmt = db.prepare("SELECT 1 FROM sessions WHERE project_path = ? LIMIT 1");
+  return stmt.get(projectPath) !== null;
 }

@@ -7,8 +7,8 @@
  * markdown files and a SQLite database.
  */
 
-import { existsSync, copyFileSync } from "fs";
-import { join } from "path";
+import { existsSync, copyFileSync, readFileSync, writeFileSync } from "fs";
+import { join, basename } from "path";
 import { debugLog, shouldExcludeProject, shouldExcludeTool, getConfig } from "./config";
 import {
   createSession,
@@ -20,6 +20,7 @@ import {
   closeDatabase,
   insertEvent,
   insertTranscriptBackup,
+  hasProjectSessions,
 } from "./db";
 import {
   initMarkdownFile,
@@ -70,7 +71,68 @@ function getInterface(): "cli" | "vscode" | "web" {
   return isRemote ? "vscode" : "cli";
 }
 
-async function handleSessionStart(input: SessionStartInput): Promise<void> {
+interface HookOutput {
+  result?: string;
+  continue?: boolean;
+}
+
+const PROJECT_CONFIG_FILE = ".claude-remember.json";
+
+interface ProjectConfig {
+  enabled?: boolean;
+  logDir?: string;
+  dbPath?: string;     // custom SQLite database path
+  markdown?: boolean;  // default true
+  sqlite?: boolean;    // default true
+}
+
+function getProjectConfig(projectPath: string): ProjectConfig | null {
+  const configPath = join(projectPath, PROJECT_CONFIG_FILE);
+  if (!existsSync(configPath)) {
+    return null;
+  }
+  try {
+    const content = readFileSync(configPath, "utf-8");
+    return JSON.parse(content) as ProjectConfig;
+  } catch (e) {
+    debugLog("Failed to parse project config:", e);
+    return null;
+  }
+}
+
+function disableProjectLogging(projectPath: string): void {
+  const configPath = join(projectPath, PROJECT_CONFIG_FILE);
+  const config: ProjectConfig = { enabled: false };
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+  debugLog("Disabled logging for project:", projectPath);
+}
+
+function isProjectLoggingEnabled(projectPath: string): boolean {
+  const config = getProjectConfig(projectPath);
+  return config === null || config.enabled !== false;
+}
+
+function getProjectLogDir(projectPath: string): string | null {
+  const config = getProjectConfig(projectPath);
+  return config?.logDir || null;
+}
+
+function isMarkdownEnabled(projectPath: string): boolean {
+  const config = getProjectConfig(projectPath);
+  return config?.markdown !== false; // default true
+}
+
+function isSqliteEnabled(projectPath: string): boolean {
+  const config = getProjectConfig(projectPath);
+  return config?.sqlite !== false; // default true
+}
+
+function getProjectDbPath(projectPath: string): string | null {
+  const config = getProjectConfig(projectPath);
+  return config?.dbPath || null;
+}
+
+async function handleSessionStart(input: SessionStartInput): Promise<HookOutput | void> {
   const { session_id, cwd, source } = input;
 
   debugLog("SessionStart:", session_id, source);
@@ -80,32 +142,61 @@ async function handleSessionStart(input: SessionStartInput): Promise<void> {
     return;
   }
 
+  // Check project-level config
+  if (!isProjectLoggingEnabled(cwd)) {
+    debugLog("Logging disabled for project:", cwd);
+    return;
+  }
+
+  // Get config options
+  const customLogDir = getProjectLogDir(cwd);
+  const customDbPath = getProjectDbPath(cwd);
+  const sqliteEnabled = isSqliteEnabled(cwd);
+  const markdownEnabled = isMarkdownEnabled(cwd);
+
+  // Check if this is a new project (no previous sessions in sqlite)
+  const isNewProject = sqliteEnabled ? !hasProjectSessions(cwd, customDbPath) : true;
+
   const timestamp = new Date().toISOString();
   const interfaceType = getInterface();
 
   // Check if session already exists (resume case)
-  const existing = getSession(session_id);
-  if (existing) {
-    debugLog("Resuming existing session:", session_id);
-    // Try to find existing markdown file
-    findExistingMarkdownFile(session_id, cwd);
-    return;
+  if (sqliteEnabled) {
+    const existing = getSession(session_id, customDbPath);
+    if (existing) {
+      debugLog("Resuming existing session:", session_id);
+      if (markdownEnabled) {
+        findExistingMarkdownFile(session_id, cwd);
+      }
+      return;
+    }
+
+    // Create new session in database
+    createSession({
+      id: session_id,
+      project_path: cwd,
+      started_at: timestamp,
+      status: "active",
+      interface: interfaceType,
+    }, customDbPath);
   }
 
-  // Create new session in database
-  createSession({
-    id: session_id,
-    project_path: cwd,
-    started_at: timestamp,
-    status: "active",
-    interface: interfaceType,
-  });
-
-  // Initialize markdown file
-  initMarkdownFile(session_id, cwd, timestamp, source);
+  // Initialize markdown file (with custom log dir if configured)
+  if (markdownEnabled) {
+    initMarkdownFile(session_id, cwd, timestamp, source, customLogDir);
+  }
 
   // Initialize session state
   sessionState.set(session_id, {});
+
+  // Show welcome message for new projects
+  if (isNewProject) {
+    const projectName = basename(cwd);
+    const logLocation = customLogDir || customDbPath || "~/.claude-logs/";
+    return {
+      result: `[Claude Remember] Session logging is enabled for "${projectName}". Conversations are saved to ${logLocation}. To disable, say "disable remember logging".`,
+    };
+  }
 }
 
 async function handleSessionEnd(input: SessionEndInput): Promise<void> {
@@ -113,19 +204,25 @@ async function handleSessionEnd(input: SessionEndInput): Promise<void> {
 
   debugLog("SessionEnd:", session_id, reason);
 
+  const customDbPath = getProjectDbPath(cwd);
+
   // Update database
-  updateSessionEnd(session_id, reason);
+  if (isSqliteEnabled(cwd)) {
+    updateSessionEnd(session_id, reason, customDbPath);
+  }
 
   // Finalize markdown
-  const status = reason === "logout" || reason === "prompt_input_exit" ? "Completed" : "Interrupted";
-  finalizeMarkdownFile(session_id, status, cwd);
+  if (isMarkdownEnabled(cwd)) {
+    const status = reason === "logout" || reason === "prompt_input_exit" ? "Completed" : "Interrupted";
+    finalizeMarkdownFile(session_id, status, cwd);
+  }
 
   // Cleanup state
   sessionState.delete(session_id);
   closeDatabase();
 }
 
-async function handleUserPromptSubmit(input: UserPromptSubmitInput): Promise<void> {
+async function handleUserPromptSubmit(input: UserPromptSubmitInput): Promise<HookOutput | void> {
   const { session_id, prompt, cwd } = input;
 
   debugLog("UserPromptSubmit:", session_id);
@@ -134,24 +231,46 @@ async function handleUserPromptSubmit(input: UserPromptSubmitInput): Promise<voi
     return;
   }
 
+  // Check for disable command (case-insensitive)
+  const lowerPrompt = prompt.toLowerCase().trim();
+  if (lowerPrompt === "disable remember logging") {
+    disableProjectLogging(cwd);
+    const projectName = basename(cwd);
+    return {
+      result: `[Claude Remember] Session logging has been disabled for "${projectName}". A .claude-remember.json file was created. Delete it to re-enable logging.`,
+    };
+  }
+
+  // Check if logging is enabled
+  if (!isProjectLoggingEnabled(cwd)) {
+    return;
+  }
+
   const timestamp = new Date().toISOString();
+  const customDbPath = getProjectDbPath(cwd);
+  const sqliteEnabled = isSqliteEnabled(cwd);
+  const markdownEnabled = isMarkdownEnabled(cwd);
 
   // Ensure session exists
   ensureSession(input);
 
   // Insert into database
-  insertMessage({
-    session_id,
-    timestamp,
-    role: "user",
-    content: prompt,
-    tool_name: null,
-    tool_input: null,
-    tool_output: null,
-  });
+  if (sqliteEnabled) {
+    insertMessage({
+      session_id,
+      timestamp,
+      role: "user",
+      content: prompt,
+      tool_name: null,
+      tool_input: null,
+      tool_output: null,
+    }, customDbPath);
+  }
 
   // Append to markdown
-  appendUserMessage(session_id, timestamp, prompt);
+  if (markdownEnabled) {
+    appendUserMessage(session_id, timestamp, prompt);
+  }
 }
 
 async function handlePreToolUse(input: PreToolUseInput): Promise<void> {
@@ -159,11 +278,14 @@ async function handlePreToolUse(input: PreToolUseInput): Promise<void> {
 
   debugLog("PreToolUse:", tool_name);
 
-  if (shouldExcludeProject(cwd) || shouldExcludeTool(tool_name)) {
+  if (shouldExcludeProject(cwd) || shouldExcludeTool(tool_name) || !isProjectLoggingEnabled(cwd)) {
     return;
   }
 
   const timestamp = new Date().toISOString();
+  const customDbPath = getProjectDbPath(cwd);
+  const sqliteEnabled = isSqliteEnabled(cwd);
+  const markdownEnabled = isMarkdownEnabled(cwd);
 
   // Ensure session exists
   ensureSession(input);
@@ -175,18 +297,22 @@ async function handlePreToolUse(input: PreToolUseInput): Promise<void> {
   const inputSummary = getToolInputSummary(tool_name, tool_input);
 
   // Insert tool call record
-  insertToolCall({
-    session_id,
-    message_id: null,
-    timestamp,
-    tool_name,
-    input_summary: inputSummary,
-    success: null,
-    duration_ms: null,
-  });
+  if (sqliteEnabled) {
+    insertToolCall({
+      session_id,
+      message_id: null,
+      timestamp,
+      tool_name,
+      input_summary: inputSummary,
+      success: null,
+      duration_ms: null,
+    }, customDbPath);
+  }
 
   // Append to markdown
-  appendToolCall(session_id, timestamp, tool_name, tool_input);
+  if (markdownEnabled) {
+    appendToolCall(session_id, timestamp, tool_name, tool_input);
+  }
 }
 
 async function handlePostToolUse(input: PostToolUseInput): Promise<void> {
@@ -194,9 +320,13 @@ async function handlePostToolUse(input: PostToolUseInput): Promise<void> {
 
   debugLog("PostToolUse:", tool_name);
 
-  if (shouldExcludeProject(cwd) || shouldExcludeTool(tool_name)) {
+  if (shouldExcludeProject(cwd) || shouldExcludeTool(tool_name) || !isProjectLoggingEnabled(cwd)) {
     return;
   }
+
+  const customDbPath = getProjectDbPath(cwd);
+  const sqliteEnabled = isSqliteEnabled(cwd);
+  const markdownEnabled = isMarkdownEnabled(cwd);
 
   // Calculate duration
   const startTime = toolCallStartTimes.get(tool_use_id);
@@ -207,20 +337,22 @@ async function handlePostToolUse(input: PostToolUseInput): Promise<void> {
   const success = tool_response.success !== false && tool_response.exit_code !== 1;
 
   // Update tool call in database
-  updateToolCallSuccess(session_id, tool_name, tool_use_id, success);
-
-  // Format output for markdown
-  let output: string | undefined;
-  if (tool_response) {
-    if (typeof tool_response === "string") {
-      output = tool_response;
-    } else {
-      output = JSON.stringify(tool_response, null, 2);
-    }
+  if (sqliteEnabled) {
+    updateToolCallSuccess(session_id, tool_name, tool_use_id, success, customDbPath);
   }
 
-  // Append result to markdown
-  appendToolResult(session_id, tool_name, success, output);
+  // Format output for markdown
+  if (markdownEnabled) {
+    let output: string | undefined;
+    if (tool_response) {
+      if (typeof tool_response === "string") {
+        output = tool_response;
+      } else {
+        output = JSON.stringify(tool_response, null, 2);
+      }
+    }
+    appendToolResult(session_id, tool_name, success, output);
+  }
 }
 
 async function handleStop(input: StopInput): Promise<void> {
@@ -228,9 +360,13 @@ async function handleStop(input: StopInput): Promise<void> {
 
   debugLog("Stop:", session_id);
 
-  if (shouldExcludeProject(cwd)) {
+  if (shouldExcludeProject(cwd) || !isProjectLoggingEnabled(cwd)) {
     return;
   }
+
+  const customDbPath = getProjectDbPath(cwd);
+  const sqliteEnabled = isSqliteEnabled(cwd);
+  const markdownEnabled = isMarkdownEnabled(cwd);
 
   // Ensure session exists
   ensureSession(input);
@@ -243,18 +379,22 @@ async function handleStop(input: StopInput): Promise<void> {
 
   if (assistantResponse && assistantResponse !== state.lastAssistantContent) {
     // Insert into database
-    insertMessage({
-      session_id,
-      timestamp,
-      role: "assistant",
-      content: assistantResponse,
-      tool_name: null,
-      tool_input: null,
-      tool_output: null,
-    });
+    if (sqliteEnabled) {
+      insertMessage({
+        session_id,
+        timestamp,
+        role: "assistant",
+        content: assistantResponse,
+        tool_name: null,
+        tool_input: null,
+        tool_output: null,
+      }, customDbPath);
+    }
 
     // Append to markdown
-    appendAssistantMessage(session_id, timestamp, assistantResponse);
+    if (markdownEnabled) {
+      appendAssistantMessage(session_id, timestamp, assistantResponse);
+    }
 
     // Update state to avoid duplicates
     state.lastAssistantContent = assistantResponse;
@@ -264,6 +404,8 @@ async function handleStop(input: StopInput): Promise<void> {
 
 function ensureSession(input: HookInput): void {
   const { session_id, cwd } = input;
+  const customDbPath = getProjectDbPath(cwd);
+  const customLogDir = getProjectLogDir(cwd);
 
   // Check if we have an active markdown file
   const existingPath = getActiveMarkdownPath(session_id);
@@ -272,7 +414,7 @@ function ensureSession(input: HookInput): void {
   }
 
   // Check database
-  const existing = getSession(session_id);
+  const existing = getSession(session_id, customDbPath);
   if (existing) {
     // Try to find markdown file
     findExistingMarkdownFile(session_id, cwd);
@@ -287,9 +429,9 @@ function ensureSession(input: HookInput): void {
     started_at: timestamp,
     status: "active",
     interface: getInterface(),
-  });
+  }, customDbPath);
 
-  initMarkdownFile(session_id, cwd, timestamp, "hook");
+  initMarkdownFile(session_id, cwd, timestamp, "hook", customLogDir);
   sessionState.set(session_id, {});
 }
 
@@ -321,28 +463,35 @@ async function handleSubagentStop(input: SubagentStopInput): Promise<void> {
 
   debugLog("SubagentStop:", session_id);
 
-  if (shouldExcludeProject(cwd)) {
+  if (shouldExcludeProject(cwd) || !isProjectLoggingEnabled(cwd)) {
     return;
   }
 
+  const customDbPath = getProjectDbPath(cwd);
+  const sqliteEnabled = isSqliteEnabled(cwd);
+  const markdownEnabled = isMarkdownEnabled(cwd);
   const timestamp = new Date().toISOString();
 
   // Ensure session exists
   ensureSession(input);
 
   // Insert event record
-  insertEvent({
-    session_id,
-    timestamp,
-    event_type: "subagent_stop",
-    subtype: null,
-    tool_name: null,
-    message: null,
-    metadata: null,
-  });
+  if (sqliteEnabled) {
+    insertEvent({
+      session_id,
+      timestamp,
+      event_type: "subagent_stop",
+      subtype: null,
+      tool_name: null,
+      message: null,
+      metadata: null,
+    }, customDbPath);
+  }
 
   // Append to markdown
-  appendSubagentStop(session_id, timestamp);
+  if (markdownEnabled) {
+    appendSubagentStop(session_id, timestamp);
+  }
 }
 
 async function handleNotification(input: NotificationInput): Promise<void> {
@@ -350,28 +499,35 @@ async function handleNotification(input: NotificationInput): Promise<void> {
 
   debugLog("Notification:", notification_type);
 
-  if (shouldExcludeProject(cwd)) {
+  if (shouldExcludeProject(cwd) || !isProjectLoggingEnabled(cwd)) {
     return;
   }
 
+  const customDbPath = getProjectDbPath(cwd);
+  const sqliteEnabled = isSqliteEnabled(cwd);
+  const markdownEnabled = isMarkdownEnabled(cwd);
   const timestamp = new Date().toISOString();
 
   // Ensure session exists
   ensureSession(input);
 
   // Insert event record
-  insertEvent({
-    session_id,
-    timestamp,
-    event_type: "notification",
-    subtype: notification_type,
-    tool_name: null,
-    message,
-    metadata: null,
-  });
+  if (sqliteEnabled) {
+    insertEvent({
+      session_id,
+      timestamp,
+      event_type: "notification",
+      subtype: notification_type,
+      tool_name: null,
+      message,
+      metadata: null,
+    }, customDbPath);
+  }
 
   // Append to markdown
-  appendNotification(session_id, timestamp, notification_type, message);
+  if (markdownEnabled) {
+    appendNotification(session_id, timestamp, notification_type, message);
+  }
 }
 
 async function handlePermissionRequest(input: PermissionRequestInput): Promise<void> {
@@ -379,10 +535,13 @@ async function handlePermissionRequest(input: PermissionRequestInput): Promise<v
 
   debugLog("PermissionRequest:", tool_name);
 
-  if (shouldExcludeProject(cwd)) {
+  if (shouldExcludeProject(cwd) || !isProjectLoggingEnabled(cwd)) {
     return;
   }
 
+  const customDbPath = getProjectDbPath(cwd);
+  const sqliteEnabled = isSqliteEnabled(cwd);
+  const markdownEnabled = isMarkdownEnabled(cwd);
   const timestamp = new Date().toISOString();
 
   // Ensure session exists
@@ -391,18 +550,22 @@ async function handlePermissionRequest(input: PermissionRequestInput): Promise<v
   const inputSummary = getToolInputSummary(tool_name, tool_input);
 
   // Insert event record
-  insertEvent({
-    session_id,
-    timestamp,
-    event_type: "permission_request",
-    subtype: null,
-    tool_name,
-    message: inputSummary,
-    metadata: JSON.stringify(tool_input),
-  });
+  if (sqliteEnabled) {
+    insertEvent({
+      session_id,
+      timestamp,
+      event_type: "permission_request",
+      subtype: null,
+      tool_name,
+      message: inputSummary,
+      metadata: JSON.stringify(tool_input),
+    }, customDbPath);
+  }
 
   // Append to markdown
-  appendPermissionRequest(session_id, timestamp, tool_name, inputSummary);
+  if (markdownEnabled) {
+    appendPermissionRequest(session_id, timestamp, tool_name, inputSummary);
+  }
 }
 
 async function handlePreCompact(input: PreCompactInput): Promise<void> {
@@ -410,10 +573,14 @@ async function handlePreCompact(input: PreCompactInput): Promise<void> {
 
   debugLog("PreCompact:", trigger);
 
-  if (shouldExcludeProject(cwd)) {
+  if (shouldExcludeProject(cwd) || !isProjectLoggingEnabled(cwd)) {
     return;
   }
 
+  const customDbPath = getProjectDbPath(cwd);
+  const customLogDir = getProjectLogDir(cwd);
+  const sqliteEnabled = isSqliteEnabled(cwd);
+  const markdownEnabled = isMarkdownEnabled(cwd);
   const timestamp = new Date().toISOString();
   const config = getConfig();
 
@@ -421,9 +588,11 @@ async function handlePreCompact(input: PreCompactInput): Promise<void> {
   ensureSession(input);
 
   // Backup the transcript before compaction
+  // Use custom logDir for backups if configured, otherwise use global logDir
   let backupPath: string | null = null;
   if (existsSync(transcript_path)) {
-    const backupDir = join(config.logDir, "backups");
+    const baseDir = customLogDir || config.logDir;
+    const backupDir = join(baseDir, "backups");
     const shortSessionId = session_id.substring(0, 8);
     const backupFilename = `${shortSessionId}_${timestamp.replace(/[:.]/g, "-")}.jsonl`;
     backupPath = join(backupDir, backupFilename);
@@ -442,28 +611,32 @@ async function handlePreCompact(input: PreCompactInput): Promise<void> {
     }
   }
 
-  // Insert event record
-  insertEvent({
-    session_id,
-    timestamp,
-    event_type: "pre_compact",
-    subtype: trigger,
-    tool_name: null,
-    message: backupPath ? `Backup: ${backupPath}` : "No backup created",
-    metadata: null,
-  });
+  if (sqliteEnabled) {
+    // Insert event record
+    insertEvent({
+      session_id,
+      timestamp,
+      event_type: "pre_compact",
+      subtype: trigger,
+      tool_name: null,
+      message: backupPath ? `Backup: ${backupPath}` : "No backup created",
+      metadata: null,
+    }, customDbPath);
 
-  // Insert transcript backup record
-  insertTranscriptBackup({
-    session_id,
-    timestamp,
-    trigger,
-    transcript_path,
-    backup_path: backupPath,
-  });
+    // Insert transcript backup record
+    insertTranscriptBackup({
+      session_id,
+      timestamp,
+      trigger,
+      transcript_path,
+      backup_path: backupPath,
+    }, customDbPath);
+  }
 
   // Append to markdown
-  appendPreCompact(session_id, timestamp, trigger, backupPath || undefined);
+  if (markdownEnabled) {
+    appendPreCompact(session_id, timestamp, trigger, backupPath || undefined);
+  }
 }
 
 async function main(): Promise<void> {
@@ -481,15 +654,17 @@ async function main(): Promise<void> {
     debugLog("Received event:", eventName);
 
     // Route to appropriate handler
+    let output: HookOutput | void;
+
     switch (eventName) {
       case "SessionStart":
-        await handleSessionStart(input as SessionStartInput);
+        output = await handleSessionStart(input as SessionStartInput);
         break;
       case "SessionEnd":
         await handleSessionEnd(input as SessionEndInput);
         break;
       case "UserPromptSubmit":
-        await handleUserPromptSubmit(input as UserPromptSubmitInput);
+        output = await handleUserPromptSubmit(input as UserPromptSubmitInput);
         break;
       case "PreToolUse":
         await handlePreToolUse(input as PreToolUseInput);
@@ -514,6 +689,11 @@ async function main(): Promise<void> {
         break;
       default:
         debugLog("Unhandled event:", eventName);
+    }
+
+    // Output hook result if there is one
+    if (output) {
+      console.log(JSON.stringify(output));
     }
 
     // Success - exit cleanly

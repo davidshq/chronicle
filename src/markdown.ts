@@ -1,8 +1,33 @@
-import { existsSync, readFileSync, writeFileSync, appendFileSync, readdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, appendFileSync, readdirSync, mkdirSync } from "fs";
 import { join, basename } from "path";
 import { getConfig, getDateDir, getSessionsDir, debugLog } from "./config";
 import { getSessionMarkdownPath, updateSessionMarkdownPath } from "./db";
 import type { MessageRecord, SessionRecord, ToolInput, BashToolInput, WriteToolInput, EditToolInput, ReadToolInput } from "./types";
+
+// Get the sessions directory, optionally using a custom base log directory
+function getEffectiveSessionsDir(customLogDir?: string | null): string {
+  if (customLogDir) {
+    const sessionsDir = join(customLogDir, "sessions");
+    if (!existsSync(sessionsDir)) {
+      mkdirSync(sessionsDir, { recursive: true });
+    }
+    return sessionsDir;
+  }
+  return getSessionsDir();
+}
+
+// Get the date directory, optionally using a custom base log directory
+function getEffectiveDateDir(date: Date = new Date(), customLogDir?: string | null): string {
+  if (customLogDir) {
+    const dateStr = date.toLocaleDateString("en-CA"); // YYYY-MM-DD in local timezone
+    const dir = join(customLogDir, "sessions", dateStr);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    return dir;
+  }
+  return getDateDir(date);
+}
 
 interface MarkdownSession {
   filePath: string;
@@ -55,8 +80,8 @@ function getNextSequenceNumber(dateDir: string): string {
   return (maxSequence + 1).toString().padStart(2, "0");
 }
 
-export function generateMarkdownPath(sessionId: string, projectPath: string, startDate: Date = new Date()): string {
-  const dateDir = getDateDir(startDate);
+export function generateMarkdownPath(sessionId: string, projectPath: string, startDate: Date = new Date(), customLogDir?: string | null): string {
+  const dateDir = getEffectiveDateDir(startDate, customLogDir);
   const projectName = getProjectName(projectPath);
   const shortSessionId = sessionId.substring(0, 8);
   const timeStr = formatTimeForFilename(startDate);
@@ -64,7 +89,7 @@ export function generateMarkdownPath(sessionId: string, projectPath: string, sta
   return join(dateDir, `${sequence}_${timeStr}_${shortSessionId}_${projectName}.md`);
 }
 
-export function initMarkdownFile(sessionId: string, projectPath: string, startedAt: string, source: string): string {
+export function initMarkdownFile(sessionId: string, projectPath: string, startedAt: string, source: string, customLogDir?: string | null): string {
   const startDate = new Date(startedAt);
 
   // First check if we already have an active session in memory
@@ -87,7 +112,7 @@ export function initMarkdownFile(sessionId: string, projectPath: string, started
   }
 
   // Search for existing file by session ID in filename
-  const existingFile = searchForSessionFile(sessionId);
+  const existingFile = searchForSessionFile(sessionId, customLogDir);
   if (existingFile) {
     debugLog("Found existing file by search:", existingFile);
     activeSessions.set(sessionId, { filePath: existingFile, sessionId, projectPath, startedAt });
@@ -98,7 +123,7 @@ export function initMarkdownFile(sessionId: string, projectPath: string, started
   }
 
   // Create new file with sequence number
-  const filePath = generateMarkdownPath(sessionId, projectPath, startDate);
+  const filePath = generateMarkdownPath(sessionId, projectPath, startDate, customLogDir);
 
   const header = `# Session: ${sessionId}
 
@@ -284,9 +309,9 @@ export function finalizeMarkdownFile(sessionId: string, status: string, projectP
 }
 
 // Search for existing file by session ID in filename (checks all date directories)
-function searchForSessionFile(sessionId: string): string | null {
+function searchForSessionFile(sessionId: string, customLogDir?: string | null): string | null {
   const shortSessionId = sessionId.substring(0, 8);
-  const sessionsDir = getSessionsDir();
+  const sessionsDir = getEffectiveSessionsDir(customLogDir);
 
   if (!existsSync(sessionsDir)) return null;
 

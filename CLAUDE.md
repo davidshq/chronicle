@@ -79,6 +79,26 @@ SQLite at `~/.claude-logs/sessions.db` with tables: `sessions`, `messages`, `too
 
 File naming: `01_143045_b5bc68c9_claude-remember.md` = first session of the day, started at 14:30:45, session ID starting with b5bc68c9, in the claude-remember project.
 
+### Per-Project Configuration
+
+Projects can have a `.claude-remember.json` in their root:
+
+```json
+{
+  "enabled": true,      // Master switch (default: true)
+  "logDir": "/path",    // Custom log directory for markdown files and backups
+  "dbPath": "/path/db", // Custom SQLite database path
+  "markdown": true,     // Enable markdown logging (default: true)
+  "sqlite": true        // Enable SQLite logging (default: true)
+}
+```
+
+- User can say "disable remember logging" to create this file with `enabled: false`
+- Custom `logDir` affects markdown files and transcript backups
+- Custom `dbPath` allows complete data isolation between projects (useful for client work)
+- Each handler checks `isMarkdownEnabled()` and `isSqliteEnabled()` before writing
+- The db.ts module caches multiple database connections by path
+
 ## Key Design Decisions
 
 - **Bun runtime** - Sub-100ms startup time critical for hook performance
@@ -87,3 +107,4 @@ File naming: `01_143045_b5bc68c9_claude-remember.md` = first session of the day,
 - **Deduplication** - Tracks `lastAssistantContent` to avoid duplicate transcript parsing
 - **Cross-process recovery** - `ensureSession()` recreates missing session state if hooks fire out of order
 - **Local timezone for directories** - Date folders use local time (via `toLocaleDateString`) so "today's" sessions appear in today's folder; timestamps in DB/markdown remain UTC
+- **Per-project config** - `.claude-remember.json` in project root overrides global settings; can disable logging or redirect output per-project
