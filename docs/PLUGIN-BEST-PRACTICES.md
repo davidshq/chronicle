@@ -95,12 +95,41 @@ The manifest at `.claude-plugin/plugin.json` defines your plugin's identity:
 | `license` | No | License identifier (MIT, Apache-2.0, etc.) |
 | `keywords` | No | Array of tags for discovery |
 
+### Auto-Discovery (Important!)
+
+Claude Code automatically discovers components in standard locations. **Do not specify paths** for standard locations in plugin.json:
+
+```json
+// WRONG - causes "Duplicate hooks file detected" error
+{
+  "name": "my-plugin",
+  "commands": "./commands/",
+  "hooks": "./hooks/hooks.json"
+}
+
+// CORRECT - let Claude auto-discover standard locations
+{
+  "name": "my-plugin"
+}
+```
+
+**Auto-discovered locations:**
+- `commands/` — Slash commands
+- `hooks/hooks.json` — Hook definitions
+- `agents/` — Custom agents
+- `skills/` — Agent skills
+- `.mcp.json` — MCP servers
+- `.lsp.json` — LSP servers
+
+Only specify paths in plugin.json if you're using **non-standard locations** (e.g., `"commands": "./custom/my-commands/"`).
+
 ### Best Practices
 
 1. **Choose a unique, descriptive name** — The name becomes your slash command namespace (`/my-plugin:command`)
 2. **Use semantic versioning** — Follow [semver](https://semver.org/) (MAJOR.MINOR.PATCH) for releases
 3. **Write a clear description** — This is shown in the plugin manager and helps users understand your plugin
 4. **Include repository/homepage** — Enables users to report issues and contribute
+5. **Don't specify standard paths** — Let Claude auto-discover `commands/`, `hooks/hooks.json`, etc.
 
 Source: [Claude Code Plugins Reference](https://code.claude.com/docs/en/plugins-reference)
 
@@ -625,12 +654,78 @@ Source: [Claude Code Hooks Guide](https://code.claude.com/docs/en/hooks-guide)
 3. **Test with fresh installation** — Ensure no local dependencies
 4. **Document all commands and hooks** — Help users understand capabilities
 5. **Include license** — Standard open-source license (MIT, Apache 2.0, etc.)
+6. **Create marketplace.json** — Required for GitHub-based distribution
+
+### Creating a Marketplace
+
+To distribute your plugin via GitHub, create `.claude-plugin/marketplace.json`:
+
+```json
+{
+  "name": "my-marketplace",
+  "owner": {
+    "name": "Your Name",
+    "url": "https://github.com/username"
+  },
+  "plugins": [
+    {
+      "name": "my-plugin",
+      "source": "./",
+      "description": "What the plugin does",
+      "version": "1.0.0",
+      "author": {
+        "name": "Your Name"
+      }
+    }
+  ]
+}
+```
+
+**For single-plugin repos**, use `"source": "./"` to reference the root directory.
+
+**For multi-plugin repos**, organize plugins in subdirectories:
+
+```json
+{
+  "plugins": [
+    { "name": "plugin-a", "source": "./plugins/plugin-a" },
+    { "name": "plugin-b", "source": "./plugins/plugin-b" }
+  ]
+}
+```
+
+### User Installation Flow
+
+Once your plugin is on GitHub, users install with two commands:
+
+```bash
+# 1. Add your marketplace
+claude plugin marketplace add username/repo-name
+
+# 2. Install the plugin
+claude plugin install plugin-name@marketplace-name
+```
+
+For example, a plugin at `github.com/davidshq/claude-remember`:
+```bash
+claude plugin marketplace add davidshq/claude-remember
+claude plugin install claude-remember@claude-remember
+```
 
 ### Distribution Options
 
-1. **Official marketplace** — Submit via [plugin directory form](https://clau.de/plugin-directory-submission)
-2. **GitHub releases** — Version-tagged releases for manual installation
+1. **GitHub marketplace** (recommended) — Create `marketplace.json`, users add via `plugin marketplace add`
+2. **Official directory** — Submit via [plugin directory form](https://clau.de/plugin-directory-submission)
 3. **Team repositories** — Private distribution within organizations
+
+### Avoid Manual Installation Hacks
+
+**Don't instruct users to:**
+- Manually edit `~/.claude/plugins/installed_plugins.json`
+- Create symlinks in `~/.claude/plugins/`
+- Edit `~/.claude/settings.json` directly
+
+These approaches are fragile and may break with Claude Code updates. Always use the marketplace system for distribution.
 
 ### Installation Scopes
 
@@ -673,6 +768,15 @@ Source: [GitHub - anthropics/claude-plugins-official](https://github.com/anthrop
 | Putting `commands/` inside `.claude-plugin/` | Move to plugin root |
 | Missing `plugin.json` | Create `.claude-plugin/plugin.json` |
 | Invalid JSON in manifest | Validate with `jq` or JSON linter |
+| Specifying `hooks` or `commands` paths for standard locations | Remove from plugin.json; they're auto-discovered |
+
+### Manifest Issues
+
+| Mistake | Fix |
+|---------|-----|
+| `"hooks": "./hooks/hooks.json"` in plugin.json | Remove it—causes "Duplicate hooks file detected" error |
+| `"commands": "./commands/"` in plugin.json | Remove it—auto-discovered from standard location |
+| Missing `marketplace.json` for distribution | Create `.claude-plugin/marketplace.json` |
 
 ### Hook Issues
 
