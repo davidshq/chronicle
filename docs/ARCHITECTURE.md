@@ -46,6 +46,37 @@ This document describes the architecture of Claude Session Logger, a plugin that
                    └─────────────┘         └─────────────────────────────┘
 ```
 
+## Plugin Architecture
+
+Claude Code plugins use a standardized structure:
+
+```
+plugin-name/
+├── .claude-plugin/
+│   └── plugin.json    # Manifest: name, version, commands path, hooks path
+├── hooks/
+│   └── hooks.json     # Hook event → command mappings
+└── commands/
+    └── *.md           # Slash command prompts (LLM-interpreted)
+```
+
+**Key concepts:**
+
+| Concept | Description |
+|---------|-------------|
+| `plugin.json` | Declares plugin metadata and paths to commands/hooks |
+| `hooks.json` | Maps hook events to shell commands (run via stdin) |
+| `${CLAUDE_PLUGIN_ROOT}` | Environment variable pointing to plugin directory |
+| Commands directory | Markdown files become `/plugin-name:command` slash commands |
+| Symlink installation | Plugin directory symlinked to `~/.claude/plugins/` |
+
+**Command types:**
+
+1. **LLM-interpreted** (`commands/*.md`): Claude receives the prompt and decides what to do
+2. **Deterministic** (handler intercepts): Hook code detects patterns and runs exact logic
+
+This plugin uses both: `/status`, `/search`, `/today` are LLM-interpreted; `/disable`, `/enable`, `/retry` are deterministic (intercepted by `handler.ts` on `UserPromptSubmit`).
+
 ## Data Flow
 
 ### 1. Hook Invocation
@@ -307,22 +338,35 @@ This handles:
 
 ```
 claude-remember/
+├── .claude-plugin/
+│   └── plugin.json       # Plugin manifest (name, version, commands, hooks paths)
+├── hooks/
+│   └── hooks.json        # Hook event definitions (uses ${CLAUDE_PLUGIN_ROOT})
+├── commands/
+│   ├── status.md         # /claude-remember:status (LLM-interpreted)
+│   ├── search.md         # /claude-remember:search (LLM-interpreted)
+│   └── today.md          # /claude-remember:today (LLM-interpreted)
 ├── src/
-│   ├── handler.ts      # Entry point, event routing
-│   ├── db.ts           # SQLite operations
-│   ├── markdown.ts     # Markdown generation
-│   ├── transcript.ts   # Transcript parsing
-│   ├── config.ts       # Configuration
-│   └── types.ts        # TypeScript interfaces
+│   ├── handler.ts        # Entry point, event routing, deterministic commands
+│   ├── db.ts             # SQLite operations
+│   ├── markdown.ts       # Markdown generation
+│   ├── transcript.ts     # Transcript parsing
+│   ├── config.ts         # Configuration
+│   └── types.ts          # TypeScript interfaces
 ├── scripts/
-│   ├── install.ts      # Add hooks to settings
-│   └── uninstall.ts    # Remove hooks
+│   ├── install.ts        # Create symlink, enable plugin
+│   └── uninstall.ts      # Remove symlink, disable plugin
 ├── docs/
-│   └── ARCHITECTURE.md # This file
-├── CLAUDE.md           # Claude Code guidance
-├── README.md           # User documentation
+│   ├── ARCHITECTURE.md          # This file
+│   └── PLUGIN-BEST-PRACTICES.md # Guide to writing Claude Code plugins
+├── CLAUDE.md             # Claude Code guidance
+├── README.md             # User documentation
 └── package.json
 ```
+
+**Plugin installation:**
+- Symlinked to `~/.claude/plugins/claude-remember`
+- Registered in `~/.claude/settings.json` as `claude-remember@local`
 
 ## Output Structure
 

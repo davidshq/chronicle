@@ -17,28 +17,72 @@ Works with both **CLI** and **VS Code extension** - they share the same configur
 curl -fsSL https://bun.sh/install | bash
 ```
 
-### Install the Plugin
+### Install from GitHub (Recommended)
 
 ```bash
-# Clone or download this repository
-cd /path/to/claude-remember
+# Add the marketplace
+claude plugin marketplace add davidshq/claude-remember
+
+# Install the plugin
+claude plugin install claude-remember@claude-remember
+```
+
+Or use slash commands in Claude Code:
+```
+/plugin marketplace add davidshq/claude-remember
+/plugin install claude-remember@claude-remember
+```
+
+### Install for Development
+
+If you want to modify the plugin or contribute:
+
+```bash
+# Clone the repository
+git clone https://github.com/davidshq/claude-remember.git
+cd claude-remember
 
 # Install dependencies
 bun install
 
-# Run the installation script
-bun run install-hooks
+# Test with the plugin loaded
+claude --plugin-dir .
 ```
 
-This will add the necessary hooks to your `~/.claude/settings.json`.
+### Slash Commands
+
+The plugin provides both deterministic commands (run exact code) and LLM-interpreted commands:
+
+**Deterministic commands** (handled by hook, always behave the same):
+
+| Command | Alias | Description |
+|---------|-------|-------------|
+| `/claude-remember:disable` | `/remember:disable` | Disable logging for this project |
+| `/claude-remember:enable` | `/remember:enable` | Re-enable logging for this project |
+| `/claude-remember:retry` | `/remember:retry` | Retry any failed logging events |
+
+You can also use natural language: "disable remember logging", "enable remember logging", "retry remember logging"
+
+**LLM-interpreted commands** (Claude decides how to fulfill the request):
+
+| Command | Description |
+|---------|-------------|
+| `/claude-remember:status` | View logging status and recent sessions |
+| `/claude-remember:search <query>` | Search past sessions by keyword |
+| `/claude-remember:today` | List all sessions from today |
 
 ### Uninstall
 
 ```bash
-bun run uninstall-hooks
+claude plugin uninstall claude-remember@claude-remember
 ```
 
-This removes the hooks but preserves your log files.
+Or use the slash command:
+```
+/plugin uninstall claude-remember@claude-remember
+```
+
+This removes the plugin but preserves your log files in `~/.claude-logs/`.
 
 ## Output
 
@@ -258,19 +302,24 @@ Consider:
 
 ## Troubleshooting
 
-### Hooks not firing
+### Plugin not working
 
-1. Check that hooks are in your settings:
+1. Check that the plugin is enabled:
    ```bash
-   cat ~/.claude/settings.json | grep -A5 "SessionStart"
+   cat ~/.claude/settings.json | grep claude-remember
    ```
 
-2. Verify Bun is in your PATH:
+2. Verify the symlink exists:
+   ```bash
+   ls -la ~/.claude/plugins/claude-remember
+   ```
+
+3. Verify Bun is in your PATH:
    ```bash
    which bun
    ```
 
-3. Enable debug mode in config and check stderr
+4. Enable debug mode in config and check stderr
 
 ### Database locked errors
 
@@ -282,8 +331,8 @@ The plugin uses WAL mode to handle concurrent access. If you still see lock erro
 
 If sessions aren't being logged:
 1. Check if the project is in `excludeProjects`
-2. Verify the hook handler path is correct in settings
-3. Check for errors: `bun run ~/.../src/handler.ts < /dev/null 2>&1`
+2. Check for a local `.claude-remember.json` with `enabled: false`
+3. Test the handler manually: `echo '{}' | bun run ~/.claude/plugins/claude-remember/src/handler.ts`
 
 ## Development
 

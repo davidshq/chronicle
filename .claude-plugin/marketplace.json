@@ -1,0 +1,18 @@
+{
+  "name": "claude-remember",
+  "owner": {
+    "name": "Dave",
+    "url": "https://github.com/davidshq"
+  },
+  "plugins": [
+    {
+      "name": "claude-remember",
+      "source": "./",
+      "description": "Session logger that persists Claude Code conversations to markdown files and SQLite database",
+      "version": "0.3.1",
+      "author": {
+        "name": "Dave"
+      }
+    }
+  ]
+}

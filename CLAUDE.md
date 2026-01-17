@@ -4,23 +4,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Claude Session Logger is a Claude Code plugin that intercepts all conversation events via the hooks system and persists them to:
+Claude Session Logger is a **Claude Code plugin** that intercepts all conversation events via the hooks system and persists them to:
 1. **Markdown files** - Human-readable logs organized by date and session
 2. **SQLite database** - Structured, queryable storage for analytics
 
-The plugin runs as a Bun process invoked by Claude Code's hook system. It receives JSON via stdin and writes to `~/.claude-logs/`.
+The plugin is distributed via GitHub marketplace and installed with:
+```
+claude plugin marketplace add davidshq/claude-remember
+claude plugin install claude-remember@claude-remember
+```
 
 ## Commands
 
 ```bash
-# Install dependencies
-bun install
+# Install the plugin (users)
+claude plugin marketplace add davidshq/claude-remember
+claude plugin install claude-remember@claude-remember
 
-# Install hooks into ~/.claude/settings.json
-bun run install-hooks
+# Uninstall
+claude plugin uninstall claude-remember@claude-remember
 
-# Uninstall hooks (preserves log files)
-bun run uninstall-hooks
+# Development: test with plugin loaded locally
+claude --plugin-dir .
 
 # Run tests
 bun test
@@ -29,12 +34,39 @@ bun test
 echo '{"hook_event_name":"SessionStart","session_id":"test","cwd":"/tmp","source":"startup"}' | bun run src/handler.ts
 ```
 
+## Plugin Structure
+
+```
+claude-remember/
+├── .claude-plugin/
+│   └── plugin.json           # Plugin manifest
+├── hooks/
+│   └── hooks.json            # Hook event definitions
+├── commands/
+│   ├── status.md             # /claude-remember:status
+│   ├── search.md             # /claude-remember:search
+│   └── today.md              # /claude-remember:today
+├── src/
+│   ├── handler.ts            # Main hook handler
+│   ├── db.ts                 # SQLite operations
+│   ├── markdown.ts           # Markdown generation
+│   ├── transcript.ts         # Transcript parsing
+│   ├── config.ts             # Configuration loading
+│   └── types.ts              # TypeScript interfaces
+├── scripts/
+│   ├── install.ts            # Plugin installer
+│   └── uninstall.ts          # Plugin uninstaller
+└── docs/
+    ├── ARCHITECTURE.md       # System architecture
+    └── PLUGIN-BEST-PRACTICES.md  # Guide to writing plugins
+```
+
 ## Architecture
 
 ### Data Flow
 
 ```
-Claude Code Hooks → stdin (JSON) → handler.ts → db.ts + markdown.ts → ~/.claude-logs/
+Claude Code Plugin System → hooks.json → handler.ts → db.ts + markdown.ts → ~/.claude-logs/
 ```
 
 ### Core Modules
@@ -111,9 +143,17 @@ File naming: `01_143045_b5bc68c9_claude-remember.md` = first session of the day,
 }
 ```
 
-Any global option can also be set per-project to override. User commands:
-- "disable remember logging" - creates config with `enabled: false`
-- "retry remember logging" - retries any failed events
+Any global option can also be set per-project to override.
+
+**Deterministic commands** (intercepted by hook, run exact code):
+- `/claude-remember:disable` or "disable remember logging" - creates config with `enabled: false`
+- `/claude-remember:enable` or "enable remember logging" - removes config to re-enable
+- `/claude-remember:retry` or "retry remember logging" - retries any failed events
+
+**LLM-interpreted commands** (Claude interprets the prompt):
+- `/claude-remember:status` - shows logging status and recent sessions
+- `/claude-remember:search <query>` - searches past sessions
+- `/claude-remember:today` - lists today's sessions
 
 ## Code Quality
 
@@ -124,6 +164,9 @@ Any global option can also be set per-project to override. User commands:
 
 ## Key Design Decisions
 
+- **Proper Claude Code plugin** - Uses `.claude-plugin/plugin.json` manifest and `hooks/hooks.json` for portable, shareable distribution
+- **Symlink installation** - Plugin installed as symlink at `~/.claude/plugins/` allowing live development without reinstall
+- **Hybrid slash commands** - Deterministic commands (`/disable`, `/enable`, `/retry`) handled by hook; LLM-interpreted commands (`/status`, `/search`, `/today`) for exploration
 - **Bun runtime** - Sub-100ms startup time critical for hook performance
 - **No external dependencies** - Uses only Bun built-ins (`bun:sqlite`, native fs)
 - **Fail-safe** - Handler always exits 0 to never block Claude Code; errors logged to stderr (configurable with `blockOnFailure`)

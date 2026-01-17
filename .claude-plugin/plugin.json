@@ -1,0 +1,11 @@
+{
+  "name": "claude-remember",
+  "description": "Session logger that persists Claude Code conversations to markdown files and SQLite database",
+  "version": "0.3.1",
+  "author": {
+    "name": "Dave"
+  },
+  "repository": "https://github.com/davidshq/claude-remember",
+  "homepage": "https://github.com/davidshq/claude-remember",
+  "license": "MIT"
+}
