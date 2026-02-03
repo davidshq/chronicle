@@ -253,9 +253,52 @@ function disableProjectLogging(projectPath: string): void {
   debugLog("Disabled logging for project:", projectPath);
 }
 
+function enableProjectLogging(projectPath: string): void {
+  const configPath = join(projectPath, PROJECT_CONFIG_FILE);
+  const config: ProjectConfig = { enabled: true };
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+  debugLog("Enabled logging for project:", projectPath);
+}
+
+/**
+ * Check if this project needs first-time setup.
+ * Returns true if:
+ * - No .claude-remember.json config file exists
+ * - No sessions exist in the global database for this project
+ *
+ * This implements opt-in consent: new projects must explicitly enable logging.
+ */
+function isFirstTimeSetup(projectPath: string): boolean {
+  // If config file exists, setup has been done (user made a choice)
+  const config = getProjectConfig(projectPath);
+  if (config !== null) {
+    return false;
+  }
+
+  // No config file - check if we have any existing sessions in the global DB
+  // This handles the upgrade path: existing users who have been logging
+  // will continue without being prompted again
+  try {
+    const hasExisting = hasProjectSessions(projectPath, null); // null = use global DB
+    return !hasExisting;
+  } catch {
+    // If we can't check the DB, assume first-time setup to be safe
+    return true;
+  }
+}
+
 function isProjectLoggingEnabled(projectPath: string): boolean {
   const config = getProjectConfig(projectPath);
-  return config === null || config.enabled !== false;
+  // If no config, check if it's first-time setup (needs opt-in)
+  if (config === null) {
+    // If first-time setup, logging is NOT enabled until user opts in
+    if (isFirstTimeSetup(projectPath)) {
+      return false;
+    }
+    // Has existing sessions but no config = legacy user, continue logging
+    return true;
+  }
+  return config.enabled !== false;
 }
 
 function getProjectLogDir(projectPath: string): string | null {
@@ -316,7 +359,17 @@ async function handleSessionStart(input: SessionStartInput): Promise<HookOutput 
     return;
   }
 
-  // Check project-level config
+  // Check if this is a first-time setup (no config, no existing sessions)
+  // Show setup prompt and don't log until user explicitly opts in
+  if (isFirstTimeSetup(cwd)) {
+    const projectName = basename(cwd);
+    debugLog("First-time setup for project:", projectName);
+    return {
+      result: `[Claude Remember] Session logging is available for "${projectName}". To enable logging, say "enable remember logging". To disable this prompt, say "disable remember logging".`,
+    };
+  }
+
+  // Check project-level config (user explicitly disabled)
   if (!isProjectLoggingEnabled(cwd)) {
     debugLog("Logging disabled for project:", cwd);
     return;
@@ -327,9 +380,6 @@ async function handleSessionStart(input: SessionStartInput): Promise<HookOutput 
   const customDbPath = getProjectDbPath(cwd);
   const sqliteEnabled = isSqliteEnabled(cwd);
   const markdownEnabled = isMarkdownEnabled(cwd);
-
-  // Check if this is a new project (no previous sessions in sqlite)
-  const isNewProject = sqliteEnabled ? !hasProjectSessions(cwd, customDbPath) : true;
 
   const timestamp = new Date().toISOString();
   const interfaceType = getInterface();
@@ -362,15 +412,6 @@ async function handleSessionStart(input: SessionStartInput): Promise<HookOutput 
 
   // Initialize session state
   sessionState.set(session_id, {});
-
-  // Show welcome message for new projects
-  if (isNewProject) {
-    const projectName = basename(cwd);
-    const logLocation = customLogDir || customDbPath || "~/.claude-logs/";
-    return {
-      result: `[Claude Remember] Session logging is enabled for "${projectName}". Conversations are saved to ${logLocation}. To disable, say "disable remember logging".`,
-    };
-  }
 }
 
 async function handleSessionEnd(input: SessionEndInput): Promise<void> {
@@ -428,21 +469,51 @@ async function handleUserPromptSubmit(input: UserPromptSubmitInput): Promise<Hoo
     return { result };
   }
 
-  // Enable logging command (delete the config file)
+  // Enable logging command
   if (lowerPrompt === "enable remember logging" ||
       lowerPrompt === "/claude-remember:enable" ||
       lowerPrompt === "/remember:enable") {
-    const configPath = join(cwd, PROJECT_CONFIG_FILE);
     const projectName = basename(cwd);
-    if (existsSync(configPath)) {
-      const { unlinkSync } = await import("fs");
-      unlinkSync(configPath);
+    const wasFirstTimeSetup = isFirstTimeSetup(cwd);
+
+    // Create/update config to enable logging
+    enableProjectLogging(cwd);
+
+    // If this was first-time setup, initialize session for current session
+    if (wasFirstTimeSetup) {
+      const timestamp = new Date().toISOString();
+      const interfaceType = getInterface();
+      const customLogDir = getProjectLogDir(cwd);
+      const customDbPath = getProjectDbPath(cwd);
+      const sqliteEnabled = isSqliteEnabled(cwd);
+      const markdownEnabled = isMarkdownEnabled(cwd);
+
+      // Create session in database
+      if (sqliteEnabled) {
+        createSession({
+          id: session_id,
+          project_path: cwd,
+          started_at: timestamp,
+          status: "active",
+          interface: interfaceType,
+        }, customDbPath);
+      }
+
+      // Initialize markdown file
+      if (markdownEnabled) {
+        initMarkdownFile(session_id, cwd, timestamp, "user_enabled", customLogDir, customDbPath);
+      }
+
+      // Initialize session state
+      sessionState.set(session_id, {});
+
       return {
-        result: `[Claude Remember] Session logging has been re-enabled for "${projectName}". The .claude-remember.json file was removed.`,
+        result: `[Claude Remember] Session logging has been enabled for "${projectName}". This session is now being logged to ~/.claude-logs/.`,
       };
     }
+
     return {
-      result: `[Claude Remember] Session logging is already enabled for "${projectName}".`,
+      result: `[Claude Remember] Session logging has been re-enabled for "${projectName}".`,
     };
   }
 

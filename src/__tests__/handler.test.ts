@@ -53,7 +53,7 @@ describe("handler integration", () => {
     expect(result.exitCode).toBe(0);
   });
 
-  test("returns welcome message for new project on SessionStart", async () => {
+  test("shows setup prompt for first-time project (no config, no sessions)", async () => {
     // Use a unique subdirectory to ensure it's a "new project"
     const uniqueProjectDir = join(TEST_PROJECT_DIR, "unique-" + Date.now());
     mkdirSync(uniqueProjectDir, { recursive: true });
@@ -69,8 +69,48 @@ describe("handler integration", () => {
 
     const { stdout } = await runHandler(input);
 
-    // Should return a result with welcome message
+    // Should show setup prompt asking user to enable/disable
     expect(stdout).toContain("Claude Remember");
+    expect(stdout).toContain("enable remember logging");
+    expect(stdout).toContain("disable remember logging");
+  });
+
+  test("first-time enable creates config and starts logging", async () => {
+    // Use a unique subdirectory to ensure it's a "new project"
+    const uniqueProjectDir = join(TEST_PROJECT_DIR, "first-time-enable-" + Date.now());
+    const uniqueConfigPath = join(uniqueProjectDir, ".claude-remember.json");
+    mkdirSync(uniqueProjectDir, { recursive: true });
+
+    const sessionId = "first-time-enable-session-" + Date.now();
+
+    // First, SessionStart should show setup prompt (no logging yet)
+    const { stdout: startOutput } = await runHandler({
+      hook_event_name: "SessionStart",
+      session_id: sessionId,
+      cwd: uniqueProjectDir,
+      source: "startup",
+      transcript_path: "/tmp/transcript.jsonl",
+      permission_mode: "default",
+    });
+
+    expect(startOutput).toContain("enable remember logging");
+    expect(existsSync(uniqueConfigPath)).toBe(false); // No config yet
+
+    // User enables logging
+    const { stdout: enableOutput } = await runHandler({
+      hook_event_name: "UserPromptSubmit",
+      session_id: sessionId,
+      cwd: uniqueProjectDir,
+      prompt: "enable remember logging",
+      transcript_path: "/tmp/transcript.jsonl",
+      permission_mode: "default",
+    });
+
+    // Should confirm logging is enabled
+    expect(enableOutput).toContain("logging has been enabled");
+    expect(existsSync(uniqueConfigPath)).toBe(true);
+    const config = JSON.parse(readFileSync(uniqueConfigPath, "utf-8"));
+    expect(config.enabled).toBe(true);
   });
 
   test("respects disabled project config", async () => {
@@ -215,8 +255,10 @@ describe("handler integration", () => {
       permission_mode: "default",
     });
 
-    // Config file should be removed
-    expect(existsSync(TEST_CONFIG_PATH)).toBe(false);
+    // Config file should now have enabled: true
+    expect(existsSync(TEST_CONFIG_PATH)).toBe(true);
+    const config = JSON.parse(readFileSync(TEST_CONFIG_PATH, "utf-8"));
+    expect(config.enabled).toBe(true);
     expect(stdout).toContain("re-enabled");
   });
 
@@ -234,13 +276,16 @@ describe("handler integration", () => {
       permission_mode: "default",
     });
 
-    expect(existsSync(TEST_CONFIG_PATH)).toBe(false);
+    // Config file should now have enabled: true
+    expect(existsSync(TEST_CONFIG_PATH)).toBe(true);
+    const config = JSON.parse(readFileSync(TEST_CONFIG_PATH, "utf-8"));
+    expect(config.enabled).toBe(true);
     expect(stdout).toContain("re-enabled");
   });
 
   test("enable command when already enabled", async () => {
-    // No config file exists = already enabled
-    expect(existsSync(TEST_CONFIG_PATH)).toBe(false);
+    // Config with enabled: true = already enabled
+    writeFileSync(TEST_CONFIG_PATH, JSON.stringify({ enabled: true }));
 
     const sessionId = "already-enabled-session-" + Date.now();
 
@@ -253,7 +298,7 @@ describe("handler integration", () => {
       permission_mode: "default",
     });
 
-    expect(stdout).toContain("already enabled");
+    expect(stdout).toContain("re-enabled");
   });
 
   test("handles /claude-remember:retry with no failed events", async () => {

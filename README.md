@@ -101,6 +101,23 @@ Or use the slash command:
 
 This removes the plugin but preserves your log files in `~/.claude-logs/`.
 
+## First-Time Setup
+
+When you open Claude Code in a project for the first time after installing the plugin, you'll see a setup prompt:
+
+```
+[Claude Remember] Session logging is available for "my-project".
+To enable logging, say "enable remember logging".
+To disable this prompt, say "disable remember logging".
+```
+
+**This is an opt-in consent model** - the plugin won't record any conversation data until you explicitly enable it. This ensures you're aware logging is available and have control over which projects are recorded.
+
+- **Say "enable remember logging"** to start logging. A `.claude-remember.json` config file is created with `enabled: true`.
+- **Say "disable remember logging"** to disable the prompt. A config file is created with `enabled: false`.
+
+If you've been using an earlier version of the plugin, your existing projects will continue logging without prompting (the plugin detects you have existing sessions in the database).
+
 ## Output
 
 ### Markdown Files

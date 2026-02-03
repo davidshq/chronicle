@@ -82,7 +82,7 @@ Claude Code Plugin System → hooks.json → handler.ts → db.ts + markdown.ts 
 
 | Event | Handler Action |
 |-------|---------------|
-| `SessionStart` | Creates session record, initializes markdown file |
+| `SessionStart` | Shows setup prompt for new projects, or creates session record |
 | `SessionEnd` | Marks session complete, finalizes markdown |
 | `UserPromptSubmit` | Logs user message |
 | `PreToolUse` | Logs tool call with inputs, starts timing |
@@ -147,7 +147,7 @@ Any global option can also be set per-project to override.
 
 **Deterministic commands** (intercepted by hook, run exact code):
 - `/claude-remember:disable` or "disable remember logging" - creates config with `enabled: false`
-- `/claude-remember:enable` or "enable remember logging" - removes config to re-enable
+- `/claude-remember:enable` or "enable remember logging" - creates config with `enabled: true` and starts logging
 - `/claude-remember:retry` or "retry remember logging" - retries any failed events
 
 **LLM-interpreted commands** (Claude interprets the prompt):
@@ -159,7 +159,7 @@ Any global option can also be set per-project to override.
 
 - **Check for deprecated APIs** - Before using Bun APIs, verify they aren't deprecated by checking type definitions (look for `@deprecated` JSDoc tags). Use `db.run()` not `db.exec()`, etc.
 - **Run type checker** - Use `bunx tsc --noEmit` to catch type errors before committing
-- **Run tests** - Use `bun test` to run the test suite (80 tests across 5 files)
+- **Run tests** - Use `bun test` to run the test suite (81 tests across 5 files)
 - **Strict mode enabled** - `tsconfig.json` has strict mode; don't use `any` types
 
 ## Key Design Decisions
@@ -176,3 +176,4 @@ Any global option can also be set per-project to override.
 - **Cross-process recovery** - `ensureSession()` recreates missing session state if hooks fire out of order
 - **Local timezone for directories** - Date folders use local time (via `toLocaleDateString`) so "today's" sessions appear in today's folder; timestamps in DB/markdown remain UTC
 - **Per-project config** - `.claude-remember.json` in project root overrides global settings; can disable logging or redirect output per-project
+- **Opt-in consent** - New projects (no config file, no existing sessions) prompt user to enable logging before recording any data. Existing users who upgrade continue logging seamlessly.
