@@ -1,12 +1,7 @@
-# Dependencies
-node_modules/
-
-# Bun
-bun.lockb
-
-# Build outputs
-dist/
-*.tsbuildinfo
+# Rust
+/target/
+# Built plugin binary (produced by scripts/install.sh)
+/bin/
 
 # IDE
 .vscode/
@@ -16,8 +11,7 @@ dist/
 .DS_Store
 Thumbs.db
 
-# Test artifacts
-coverage/
-
 # Claude
 .claude/settings.local.json
+
+/target/debug/**

@@ -1,11 +1,11 @@
 {
-  "name": "claude-remember",
-  "description": "Session logger that persists Claude Code conversations to markdown files and SQLite database",
-  "version": "0.3.3",
+  "name": "chronicle",
+  "description": "Lossless recorder for Claude Code sessions — raw JSONL + markdown + SQLite/FTS, captured by an external daemon with an in-session health watchdog.",
+  "version": "0.4.0",
   "author": {
     "name": "Dave"
   },
-  "repository": "https://github.com/davidshq/claude-remember",
-  "homepage": "https://github.com/davidshq/claude-remember",
+  "repository": "https://github.com/davidshq/chronicle",
+  "homepage": "https://github.com/davidshq/chronicle",
   "license": "MIT"
 }

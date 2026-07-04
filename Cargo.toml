@@ -1,0 +1,32 @@
+[package]
+name = "chronicle"
+version = "0.4.0"
+edition = "2021"
+description = "Chronicle: an external, lossless recorder for Claude Code sessions — raw JSONL + markdown + SQLite/FTS, with a watchdog plugin."
+license = "MIT"
+repository = "https://github.com/davidshq/chronicle"
+authors = ["Dave"]
+default-run = "chronicle"
+
+[[bin]]
+name = "chronicle"
+path = "src/main.rs"
+
+[dependencies]
+notify = "6"
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+dirs = "5"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1

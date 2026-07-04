@@ -1,17 +1,16 @@
 ---
-description: Show claude-remember logging status and recent sessions
-allowed-tools: Read, Bash(sqlite3:*), Glob
+description: Show Chronicle capture health and recent sessions
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/bin/chronicle:*)
 ---
 
-Check the claude-remember session logging status:
+Run the Chronicle status command and present its output to the user:
 
-1. Read the configuration from ~/.claude-logs/config.json (if it exists) to show current settings
-2. List the 5 most recent session markdown files from ~/.claude-logs/sessions/ (check today's date folder first)
-3. Query the SQLite database at ~/.claude-logs/sessions.db to count total sessions and messages
-4. Report any per-project overrides from .claude-remember.json in the current directory
+```
+"${CLAUDE_PLUGIN_ROOT}/bin/chronicle" status
+```
 
-Display a summary showing:
-- Whether logging is enabled
-- Log directory location
-- Database location and stats (total sessions, messages, tool calls)
-- Recent session files with their timestamps and projects
+This reports:
+- Capture health (via the watchdog): whether the `chronicle` daemon is running and the store is fresh
+- Recent sessions with timestamps, project, and message counts
+
+If it reports the recorder is not running or stale, remind the user to start the daemon (`chronicle daemon`, or via the installed service) and point them at the install script if needed.

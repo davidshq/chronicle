@@ -1,15 +1,15 @@
 {
-  "name": "claude-remember",
+  "name": "chronicle",
   "owner": {
     "name": "Dave",
     "url": "https://github.com/davidshq"
   },
   "plugins": [
     {
-      "name": "claude-remember",
+      "name": "chronicle",
       "source": "./",
-      "description": "Session logger that persists Claude Code conversations to markdown files and SQLite database",
-      "version": "0.3.1",
+      "description": "Lossless recorder for Claude Code sessions — raw JSONL + markdown + SQLite/FTS, captured by an external daemon with an in-session health watchdog.",
+      "version": "0.4.0",
       "author": {
         "name": "Dave"
       }

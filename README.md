@@ -1,384 +1,129 @@
-# Claude Session Logger
+# Chronicle
 
-A Claude Code plugin that intercepts all conversation logs and saves them:
-1. **As markdown files** - Human-readable, organized by date and session
-2. **Into a SQLite database** - Structured, queryable, analytics-ready
+**A lossless recorder for Claude Code sessions.** Chronicle keeps a faithful,
+byte-for-byte record of everything Claude Code does — and, unlike the "memory"
+plugins, it never summarizes the original away.
 
-Works with both **CLI** and **VS Code extension** - they share the same configuration.
+It has two parts:
 
-## Installation
+- **`chronicled`** — an external daemon that watches Claude Code's transcript
+  files and records them. Because it runs *outside* Claude Code, capture does
+  **not** depend on hooks firing (which [fail silently](https://github.com/anthropics/claude-code/issues/16047)
+  in long sessions, on `/exit`, and during `/compact`). Your record survives
+  even when Claude Code deletes its own old transcripts.
+- **`chronicle` plugin** — a thin in-session layer that lets you `search` /
+  `status` / `today` your history and **warns you when the recorder is down or
+  stale** (a watchdog, not a capturer).
 
-### Prerequisites
+## Why not just use a memory plugin?
 
-- [Bun](https://bun.sh/) runtime (v1.0.0 or later)
+| | Memory plugins (claude-mem, remember, …) | **Chronicle** |
+|---|---|---|
+| Storage | AI-compresses sessions, discards originals (lossy) | Keeps everything verbatim (lossless) |
+| Goal | Inject smaller context into the next session | A faithful archive you can go back and read |
+| Capture | Hook-based (silent failures) | External daemon (hook-independent) |
+| Cost | LLM calls per session | Free core; LLM summaries are opt-in |
+
+## Storage layers (each independently opt-in)
+
+```
+raw JSONL archive   ← lossless ground truth, byte-for-byte, deletion-proof
+markdown mirror     ← human-readable rendering, derived from raw
+SQLite + FTS5 index ← full-text search, derived from raw
+narrative summaries ← opt-in, LLM-derived, cross-referenced to raw (roadmap)
+```
+
+Derived layers can be deleted and rebuilt from the raw archive at any time
+(`chronicle rebuild`) — raw is always the source of truth.
+
+## Install
 
 ```bash
-# Install Bun if you don't have it
-curl -fsSL https://bun.sh/install | bash
+# Build + install the binary and register the capture daemon as a user service
+# (systemd on Linux, launchd on macOS), and migrate any old ~/.claude-logs store:
+./scripts/install.sh
+
+# Then add the plugin (for search + the health watchdog):
+claude plugin marketplace add davidshq/chronicle
+claude plugin install chronicle@chronicle
 ```
 
-### Install from GitHub (Recommended)
+## Usage
 
 ```bash
-# Add the marketplace
-claude plugin marketplace add davidshq/claude-remember
-
-# Install the plugin
-claude plugin install claude-remember@claude-remember
+chronicle status              # capture health + recent sessions
+chronicle status --today      # today's sessions
+chronicle search "rate limiter"   # full-text search (FTS5 syntax)
+chronicle daemon              # run the capture daemon in the foreground
+chronicle daemon --poll       # use periodic polling instead of live watch
+chronicle rebuild             # rebuild markdown + index from the raw archive
+chronicle migrate             # import an old ~/.claude-logs store
 ```
 
-Or use slash commands in Claude Code:
-```
-/plugin marketplace add davidshq/claude-remember
-/plugin install claude-remember@claude-remember
-```
+Inside Claude Code, the plugin also provides `/chronicle:status`,
+`/chronicle:search <query>`, and `/chronicle:today`.
 
-### Install for Development
-
-If you want to modify the plugin or contribute:
-
-```bash
-# Clone the repository
-git clone https://github.com/davidshq/claude-remember.git
-cd claude-remember
-
-# Install dependencies
-bun install
-
-# Test with the plugin loaded
-claude --plugin-dir .
-```
-
-### Slash Commands
-
-The plugin provides both deterministic commands (run exact code) and LLM-interpreted commands:
-
-**Deterministic commands** (handled by hook, always behave the same):
-
-| Command | Alias | Description |
-|---------|-------|-------------|
-| `/claude-remember:disable` | `/remember:disable` | Disable logging for this project |
-| `/claude-remember:enable` | `/remember:enable` | Re-enable logging for this project |
-| `/claude-remember:retry` | `/remember:retry` | Retry any failed logging events |
-
-You can also use natural language: "disable remember logging", "enable remember logging", "retry remember logging"
-
-**LLM-interpreted commands** (Claude decides how to fulfill the request):
-
-| Command | Description |
-|---------|-------------|
-| `/claude-remember:status` | View logging status and recent sessions |
-| `/claude-remember:search <query>` | Search past sessions by keyword |
-| `/claude-remember:today` | List all sessions from today |
-
-### Updating
-
-To get the latest version of the plugin:
-
-```bash
-claude plugin marketplace update claude-remember
-```
-
-Or use the slash command:
-```
-/plugin marketplace update claude-remember
-```
-
-This pulls the latest changes from GitHub. The update takes effect on your next Claude Code session.
-
-**Note:** Third-party plugins (like this one) don't auto-update by default. You can enable auto-updates for this marketplace in Claude Code settings, or run the update command periodically.
-
-### Uninstall
-
-```bash
-claude plugin uninstall claude-remember@claude-remember
-```
-
-Or use the slash command:
-```
-/plugin uninstall claude-remember@claude-remember
-```
-
-This removes the plugin but preserves your log files in `~/.claude-logs/`.
-
-## First-Time Setup
-
-When you open Claude Code in a project for the first time after installing the plugin, you'll see a setup prompt:
+## Store layout
 
 ```
-[Claude Remember] Session logging is available for "my-project".
-To enable logging, say "enable remember logging".
-To disable this prompt, say "disable remember logging".
+~/.chronicle/
+  config.json                     settings (layers, capture mode, exclusions…)
+  heartbeat.json                  daemon liveness/freshness (read by the watchdog)
+  state/offsets.json              restart-safe per-file byte offsets
+  raw/<project>/<session>.jsonl   verbatim archive (ground truth)
+  markdown/<YYYY-MM-DD>/*.md       rendered mirror
+  index.db                        SQLite + FTS5
 ```
-
-**This is an opt-in consent model** - the plugin won't record any conversation data until you explicitly enable it. This ensures you're aware logging is available and have control over which projects are recorded.
-
-- **Say "enable remember logging"** to start logging. A `.claude-remember.json` config file is created with `enabled: true`.
-- **Say "disable remember logging"** to disable the prompt. A config file is created with `enabled: false`.
-
-If you've been using an earlier version of the plugin, your existing projects will continue logging without prompting (the plugin detects you have existing sessions in the database).
-
-## Output
-
-### Markdown Files
-
-Located at `~/.claude-logs/sessions/YYYY-MM-DD/`:
-
-```
-~/.claude-logs/
-├── sessions/
-│   ├── 2026-01-16/
-│   │   ├── 01_093045_abc12345_my-project.md
-│   │   └── 02_143022_def67890_other-project.md
-│   └── 2026-01-17/
-│       └── 01_101530_ghi11111_my-project.md
-└── sessions.db
-```
-
-Files are named `{sequence}_{HHMMSS}_{session_id}_{project}.md` where sequence is the session number for that day, HHMMSS is the start time, and session_id is the first 8 characters of the Claude session ID.
-
-Each markdown file contains:
-- Session metadata (project path, start time, status)
-- User messages with timestamps
-- Tool calls with formatted inputs
-- Tool results (success/failure, optional output)
-- Assistant responses
-
-### SQLite Database
-
-Located at `~/.claude-logs/sessions.db` with five tables:
-
-**sessions**
-- `id` - Session ID
-- `project_path` - Project directory
-- `started_at` / `ended_at` - Timestamps
-- `status` - active/completed/interrupted
-- `interface` - cli/vscode/web
-- `markdown_path` - Path to the markdown log file
-
-**messages**
-- `session_id` - Foreign key to sessions
-- `timestamp` - When the message was recorded
-- `role` - user/assistant/system/tool
-- `content` - Message content
-- `tool_name` / `tool_input` / `tool_output` - For tool calls
-
-**tool_calls**
-- `session_id` - Foreign key to sessions
-- `tool_name` - Name of the tool
-- `input_summary` - Brief summary of input
-- `success` - Whether the tool succeeded
-- `duration_ms` - Execution time
-
-**events**
-- `session_id` - Foreign key to sessions
-- `timestamp` - When the event occurred
-- `event_type` - notification/permission_request/pre_compact/subagent_stop
-- `subtype` - Event-specific subtype
-- `tool_name` - Tool involved (if applicable)
-- `message` - Event message or description
-
-**transcript_backups**
-- `session_id` - Foreign key to sessions
-- `timestamp` - When the backup was created
-- `trigger` - manual/auto
-- `transcript_path` - Original transcript location
-- `backup_path` - Where the backup was saved
-
-## Configuration
-
-### Per-Project Configuration
-
-Create a `.claude-remember.json` file in any project root to configure logging for that project:
-
-```json
-{
-  "enabled": true,
-  "logDir": "/path/to/custom-logs",
-  "dbPath": "/path/to/custom-logs/sessions.db",
-  "markdown": true,
-  "sqlite": true,
-  "blockOnFailure": true,
-  "maxRetries": 5
-}
-```
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `enabled` | `true` | Master switch - set to `false` to disable all logging |
-| `logDir` | (global) | Custom directory for this project's markdown logs and backups |
-| `dbPath` | (global) | Custom path for this project's SQLite database |
-| `markdown` | `true` | Enable markdown file logging |
-| `sqlite` | `true` | Enable SQLite database logging |
-| `blockOnFailure` | (global) | If `true`, exit non-zero on logging failure (blocks Claude) |
-| `maxRetries` | (global) | Number of retry attempts before giving up |
-| `retryDelayMs` | (global) | Delay between retries in milliseconds |
-| `maxSearchDays` | (global) | Days to search when finding session files |
-| `includeToolOutputs` | (global) | Include full tool outputs in markdown |
-| `maxToolOutputLength` | (global) | Truncate tool outputs longer than this |
-| `debug` | (global) | Enable debug logging to stderr |
-
-Per-project settings override global settings.
-
-**Example configurations:**
-
-```json
-// Markdown only (no database)
-{"sqlite": false}
-
-// SQLite only (no markdown files)
-{"markdown": false}
-
-// Custom location for this project's logs (markdown + SQLite)
-{"logDir": "/path/to/project-logs", "dbPath": "/path/to/project-logs/sessions.db"}
-
-// Completely isolated logging (keeps client data separate)
-{
-  "logDir": "/path/to/client-a/logs",
-  "dbPath": "/path/to/client-a/logs/sessions.db"
-}
-
-// Disable logging entirely for this project
-{"enabled": false}
-```
-
-**Commands you can say:**
-- `"disable remember logging"` - Creates `.claude-remember.json` with `enabled: false`
-- `"retry remember logging"` - Retries any failed logging events (useful if `blockOnFailure` is enabled)
-
-### Global Configuration
-
-Create `~/.claude-logs/config.json` to set defaults for all projects:
-
-```json
-{
-  "logDir": "~/.claude-logs",
-  "includeToolOutputs": true,
-  "maxToolOutputLength": 2000,
-  "enableWAL": true,
-  "excludeTools": ["Read"],
-  "excludeProjects": ["/path/to/sensitive-project"],
-  "debug": false,
-  "blockOnFailure": false,
-  "maxRetries": 3,
-  "retryDelayMs": 2000,
-  "maxSearchDays": 7
-}
-```
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `logDir` | `~/.claude-logs` | Default directory for log files |
-| `includeToolOutputs` | `true` | Include full tool outputs in markdown |
-| `maxToolOutputLength` | `2000` | Truncate tool outputs longer than this |
-| `enableWAL` | `true` | Use SQLite WAL mode for better concurrency |
-| `excludeTools` | `[]` | Tools to exclude from logging |
-| `excludeProjects` | `[]` | Project paths to exclude from logging |
-| `debug` | `false` | Enable debug logging to stderr |
-| `blockOnFailure` | `false` | If `true`, exit non-zero on logging failure (blocks Claude) |
-| `maxRetries` | `3` | Number of retry attempts before giving up |
-| `retryDelayMs` | `2000` | Delay between retries in milliseconds |
-| `maxSearchDays` | `7` | Days to search when finding session files |
-
-## Querying the Database
-
-```bash
-# Open the database
-sqlite3 ~/.claude-logs/sessions.db
-
-# Recent sessions
-SELECT id, project_path, started_at, status
-FROM sessions
-ORDER BY started_at DESC
-LIMIT 10;
-
-# Tool usage statistics
-SELECT tool_name, COUNT(*) as count,
-       ROUND(AVG(CASE WHEN success THEN 100.0 ELSE 0 END), 1) as success_rate
-FROM tool_calls
-GROUP BY tool_name
-ORDER BY count DESC;
-
-# Messages for a specific session
-SELECT timestamp, role, substr(content, 1, 100) as preview
-FROM messages
-WHERE session_id = 'your-session-id'
-ORDER BY timestamp;
-```
-
-## How It Works
-
-The plugin uses Claude Code's [hooks system](https://code.claude.com/docs/en/hooks) to intercept events:
-
-| Hook Event | What's Logged |
-|------------|---------------|
-| `SessionStart` | Creates new session record and markdown file |
-| `SessionEnd` | Marks session complete, finalizes markdown |
-| `UserPromptSubmit` | Logs user messages |
-| `PreToolUse` | Logs tool calls with inputs |
-| `PostToolUse` | Updates tool call with result/success |
-| `Stop` | Captures assistant's response from transcript |
-
-The hooks are designed to be fast (<100ms) and never block Claude Code - errors are logged but don't interrupt your workflow.
-
-## Privacy Considerations
-
-This plugin logs **all conversation content** including:
-- Your prompts and questions
-- Claude's responses
-- File contents read/written
-- Command outputs
-
-Consider:
-- Using `excludeProjects` for sensitive repositories
-- The logs are stored locally - they're never sent anywhere
-- Tool outputs may contain sensitive data
-
-## Troubleshooting
-
-### Plugin not working
-
-1. Check that the plugin is enabled:
-   ```bash
-   cat ~/.claude/settings.json | grep claude-remember
-   ```
-
-2. Verify the symlink exists:
-   ```bash
-   ls -la ~/.claude/plugins/claude-remember
-   ```
-
-3. Verify Bun is in your PATH:
-   ```bash
-   which bun
-   ```
-
-4. Enable debug mode in config and check stderr
-
-### Database locked errors
-
-The plugin uses WAL mode to handle concurrent access. If you still see lock errors:
-1. Close any other applications reading the database
-2. Run `sqlite3 ~/.claude-logs/sessions.db "PRAGMA wal_checkpoint(TRUNCATE);"`
-
-### Missing sessions
-
-If sessions aren't being logged:
-1. Check if the project is in `excludeProjects`
-2. Check for a local `.claude-remember.json` with `enabled: false`
-3. Test the handler manually: `echo '{}' | bun run ~/.claude/plugins/claude-remember/src/handler.ts`
 
 ## Development
 
 ```bash
-# Run tests
-bun test
-
-# Debug mode - see what hooks receive
-echo '{"hook_event_name":"SessionStart","session_id":"test","cwd":"/tmp","source":"startup"}' | \
-  bun run src/handler.ts
+cargo build          # build
+cargo test           # run the test suite
+cargo clippy         # lint
 ```
+
+Built in Rust as a single binary with git-style subcommands. See
+`openspec/changes/chronicle-external-recorder/` for the full design rationale
+(the pivot from the old hook-based `claude-remember` plugin).
+
+## Acknowledgments
+
+Chronicle is an independent, from-scratch implementation — no code was copied
+from the projects below. They are prior art and inspiration we studied while
+designing it, and credit is due:
+
+- **[claude-vault](https://github.com/kuroko1t/claude-vault)** (kuroko1t) — the
+  closest prior art: a single Rust binary that archives Claude Code sessions to
+  SQLite+FTS. Chronicle differs by capturing *losslessly and live* (external
+  daemon vs. hook-triggered import) and keeping raw JSONL + markdown alongside
+  the index. Reading it clarified the problem space.
+- **[claude-code-trace](https://github.com/delexw/claude-code-trace)** (delexw)
+  — demonstrated that live-tailing Claude Code's JSONL transcripts is a solved,
+  reliable technique, which de-risked our capture engine.
+- **[claude-mem](https://github.com/thedotmack/claude-mem)** (thedotmack) and the
+  official **remember** plugin — the lossy "memory" approach Chronicle
+  deliberately contrasts with; studying them sharpened our lossless positioning.
+- **[ccboard](https://github.com/FlorianBruniaux/ccboard)** — prior art for a
+  Rust-based Claude Code monitoring binary.
+- Jesse Vincent's writeup on
+  **[Claude Code session continuation](https://blog.fsck.com/agent-blog/2026/02/22/claude-code-session-continuation/)**
+  — the clearest explanation of the compaction/`compact_boundary` file mechanics
+  that shaped our capture-cadence design.
+- The prior **`claude-remember`** plugin (this repo's own history, tagged
+  `v0.3.3-pre-chronicle`) — the hook-based ancestor whose markdown format and
+  SQLite schema shape were ported into Chronicle's derived layers.
+
+Built on excellent Rust crates:
+[`notify`](https://crates.io/crates/notify),
+[`rusqlite`](https://crates.io/crates/rusqlite) (bundled SQLite + FTS5),
+[`clap`](https://crates.io/crates/clap),
+[`serde`](https://crates.io/crates/serde) / `serde_json`,
+[`chrono`](https://crates.io/crates/chrono),
+[`dirs`](https://crates.io/crates/dirs),
+[`anyhow`](https://crates.io/crates/anyhow).
 
 ## License
 
 MIT
+
