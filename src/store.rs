@@ -6,7 +6,7 @@
 //!   heartbeat.json                 { pid, started_at, last_sync, last_alive }  <- watchdog reads this
 //!   state/offsets.json             per-file byte offsets (restart-safe capture)
 //!   raw/<project>/<session>.jsonl  verbatim archive (ground truth)
-//!   markdown/<YYYY-MM-DD>/*.md      rendered mirror
+//!   markdown/<project>/<YYYY-MM-DD>/*.md   rendered mirror
 //!   index.db                       SQLite + FTS
 //! ```
 

@@ -119,7 +119,7 @@ deletion.
 
 ### Markdown (`src/layers/markdown.rs`)
 
-Human-readable rendering, one file per session under `markdown/<YYYY-MM-DD>/`.
+Human-readable rendering, one file per session under `markdown/<project>/<YYYY-MM-DD>/`.
 MAY truncate large tool bodies (bounded by `max_tool_output_length`) because the
 untruncated original always lives in raw. Tool-input formatting is specialized
 per tool (Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch; others fall
@@ -177,7 +177,7 @@ re-indexing does not duplicate rows that carry a uuid.
   heartbeat.json                  { pid, started_at, last_sync }  ← watchdog reads this
   state/offsets.json              per-file byte offsets (restart-safe capture)
   raw/<project>/<session>.jsonl   verbatim archive (ground truth)
-  markdown/<YYYY-MM-DD>/*.md       rendered mirror
+  markdown/<project>/<YYYY-MM-DD>/*.md   rendered mirror
   index.db                        SQLite + FTS5
 ```
 

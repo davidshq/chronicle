@@ -74,13 +74,21 @@ impl MarkdownMirror {
                 .unwrap_or_else(|| t.get(0..10).unwrap_or("unknown-date").to_string()),
             None => "unknown-date".to_string(),
         };
-        let project = sanitize(last_component(project_path));
+        // Sanitize the *full* project path for the folder, not just its last
+        // component, so two repos sharing a basename (e.g. ~/work/api and
+        // ~/personal/api) get distinct folders instead of merging — mirroring
+        // how the raw layer keeps them apart by their full encoded path.
+        let project = sanitize(project_path);
+        // The filename keeps its short basename suffix for at-a-glance context
+        // when a file is viewed outside its folder (search results, `find`, …).
+        let project_name = sanitize(last_component(project_path));
         // Use the full session id, not an 8-char prefix: two sessions sharing a
         // hex prefix in the same project would otherwise collide into one file.
         let session = sanitize(session_id);
-        let dir = self.root.join(&date);
+        // Group by repo first, then day: markdown/<project>/<date>/<session>_<name>.md.
+        let dir = self.root.join(&project).join(&date);
         std::fs::create_dir_all(&dir)?;
-        let path = dir.join(format!("{}_{}.md", session, project));
+        let path = dir.join(format!("{}_{}.md", session, project_name));
         if !path.exists() {
             let header = format!(
                 "# Session: {}\n\n**Project**: `{}`\n**Started**: {}\n\n---\n\n",

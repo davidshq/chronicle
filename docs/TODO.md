@@ -60,6 +60,25 @@ for the normative requirements and scenarios.
   cheap (no fsync until checkpoint). Revisit only if a profile shows index
   writes are actually a bottleneck; the watermark design above is the path.
 
+- **Render agent sidechains to markdown (someday / maybe).** Subagent
+  transcripts (`agent-*.jsonl`) are captured losslessly in raw (359 of 476 raw
+  files on the dev store) but never appear in the markdown mirror — only
+  top-level sessions render. A reader browsing `markdown/<project>/<date>/`
+  therefore sees the main session but not the subagent work it spawned. Options
+  if we pursue it: render each sidechain as its own file, or nest/inline it
+  under the parent session's markdown (needs the parent↔sidechain link, which
+  raw already carries). Low priority — raw has everything; this is purely about
+  the human-readable layer's completeness.
+
+- **Configurable markdown layout (someday / maybe).** The mirror path is
+  currently hard-coded to `markdown/<project>/<date>/<session>_<name>.md`. Offer
+  a config knob (e.g. `markdown.layout` in `config.json`) so people can choose
+  their own grouping/naming — date-first vs project-first, whether the project
+  is a folder level and/or a filename suffix, session-id vs prefix, etc. Since
+  markdown is a derived layer, changing the template is safe: `chronicle
+  rebuild` regenerates from raw. Decide on a template syntax (named tokens like
+  `{project}/{date}/{session}` vs a small enum of presets) before building.
+
 ## Phase 9 — Cross-tool capture (future, not v1)
 
 Adapters for Codex / Cursor / Gemini: each is "a new watch path + a format
