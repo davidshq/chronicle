@@ -101,7 +101,7 @@ chronicle/
 │   └── commands/             # daemon, search, status, watchdog, migrate, rebuild
 ├── tests/                    # integration tests
 ├── openspec/                 # design rationale for the rewrite
-└── docs/                     # ARCHITECTURE, DEVELOPMENT, TODO, CODE-REVIEW,
+└── docs/                     # ARCHITECTURE, DEVELOPMENT, TODO, 
                               # PLUGIN-BEST-PRACTICES
 ```
 

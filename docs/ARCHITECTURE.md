@@ -173,8 +173,9 @@ re-indexing does not duplicate rows that carry a uuid.
 ```
 ~/.chronicle/
   bin/chronicle                   the installed binary (daemon + plugin both use it)
+  store-path                      one-line pointer to the store (absent ⇒ store is the anchor)
   config.json                     user config
-  heartbeat.json                  { pid, started_at, last_sync }  ← watchdog reads this
+  heartbeat.json                  { pid, started_at, last_sync, last_alive }  ← watchdog reads this
   state/offsets.json              per-file byte offsets (restart-safe capture)
   raw/<project>/<session>.jsonl   verbatim archive (ground truth)
   markdown/<project>/<YYYY-MM-DD>/*.md   rendered mirror
@@ -192,9 +193,14 @@ wherever the anchor's `store-path` pointer redirects (set via `install.sh
 
 Invoked by the SessionStart hook. Reads `heartbeat.json` and reports one of:
 
-- **Healthy** — process alive and `last_sync` within `staleness_secs`.
-- **Stale** — process alive but `last_sync` older than `staleness_secs`.
+- **Healthy** — process alive and `last_alive` within `staleness_secs`.
+- **Stale** — process alive but `last_alive` older than `staleness_secs`.
 - **Down** — no heartbeat, or the recorded pid is not alive.
+
+Staleness is measured against `last_alive` — a liveness tick the daemon advances
+on a timer independent of capture activity — so an idle-but-live daemon isn't
+flagged STALE just because no session happened to write. (Heartbeats predating
+`last_alive` fall back to `last_sync`.)
 
 It is **non-destructive and always exits 0**. Capture runs in the separate
 daemon, so the worst a watchdog failure can do is miss a warning.
@@ -240,7 +246,6 @@ size-optimized (`opt-level = "z"`, LTO, stripped).
 
 Timestamps are stored verbatim from the transcript (UTC). `status --today` and
 markdown date-folder bucketing currently derive dates from those timestamps; see
-`docs/CODE-REVIEW.md` for the known local-vs-UTC nuance around midnight.
 
 ## Migration from the old plugin
 
