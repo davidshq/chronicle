@@ -162,6 +162,7 @@ impl Index {
     }
 
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+        let phrase = fts_phrase(query);
         let mut stmt = self.conn.prepare(
             "SELECT m.session_id, s.project_path, m.timestamp, m.role,
                     snippet(messages_fts, 0, '[', ']', ' … ', 12)
@@ -173,7 +174,7 @@ impl Index {
              LIMIT ?2",
         )?;
         let rows = stmt
-            .query_map(params![query, limit as i64], |r| {
+            .query_map(params![phrase, limit as i64], |r| {
                 Ok(SearchHit {
                     session_id: r.get(0)?,
                     project_path: r.get(1)?,
@@ -221,6 +222,17 @@ impl Index {
             .unwrap_or(0);
         Ok(n)
     }
+}
+
+/// Wrap a raw user query as a single FTS5 phrase literal.
+///
+/// Passing the arg straight to `MATCH` lets FTS5 interpret ordinary characters
+/// as operators — `foo-bar` parses as a column/NOT expression, an unbalanced
+/// `"` is a syntax error — surfacing a bare rusqlite error to the user. Quoting
+/// the whole term makes it a phrase match where those characters are literal.
+/// The only character still special inside a phrase is `"`, escaped by doubling.
+fn fts_phrase(query: &str) -> String {
+    format!("\"{}\"", query.replace('"', "\"\""))
 }
 
 fn map_session(r: &rusqlite::Row) -> rusqlite::Result<SessionRow> {

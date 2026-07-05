@@ -53,6 +53,26 @@ fn all_layers_populate_index_and_markdown() {
     assert!(walk_count(&store.join("markdown")) >= 1, "markdown mirror produced");
 }
 
+/// FTS5 treats `-`, `"`, `*` etc. as operators; a raw term like `foo-bar` or an
+/// unbalanced quote must not surface a bare rusqlite syntax error. Quoting the
+/// term as a phrase literal makes such queries return cleanly (zero hits here).
+#[test]
+fn search_tolerates_fts_special_characters() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let watch = tmp.path().join("projects");
+    let session = write_session(&watch);
+
+    let cfg = test_config(store.clone(), watch, all_layers());
+    let mut engine = Engine::new(cfg).unwrap();
+    engine.sync_file(&session).unwrap();
+
+    let index = Index::open(&store.join("index.db")).unwrap();
+    for q in ["foo-bar", "unbalanced \" quote", "a:b", "NEAR(", "*"] {
+        assert!(index.search(q, 10).is_ok(), "query {q:?} must not error");
+    }
+}
+
 /// Derived layers can be deleted and rebuilt entirely from the raw archive.
 #[test]
 fn rebuild_derived_from_raw() {

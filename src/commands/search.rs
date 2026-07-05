@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 #[derive(Args)]
 pub struct SearchArgs {
-    /// Full-text query (FTS5 syntax).
+    /// Search terms (matched as a phrase; special characters are literal).
     query: String,
     #[arg(long)]
     store: Option<PathBuf>,
@@ -25,7 +25,13 @@ pub fn run(args: SearchArgs) -> Result<()> {
         return Ok(());
     }
     let index = Index::open(&db_path)?;
-    let hits = index.search(&args.query, args.limit)?;
+    let hits = match index.search(&args.query, args.limit) {
+        Ok(hits) => hits,
+        Err(_) => {
+            println!("Search failed. If your query has unusual characters, try simpler terms; otherwise the index may be corrupt — try `chronicle rebuild`.");
+            return Ok(());
+        }
+    };
 
     if args.json {
         let items: Vec<_> = hits
