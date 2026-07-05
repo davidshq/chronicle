@@ -186,11 +186,20 @@ impl Engine {
 
         if let Some(index) = &self.index {
             let raw_rel = self.rel_for(path);
+            // Only the session's *main* transcript may set `raw_path` — the index's
+            // pointer back to ground truth. Subagent sidechain files carry the
+            // parent's `sessionId` (so they fold into the same session), but they
+            // live at `<sessionId>/subagents/agent-*.jsonl`, whose stem differs
+            // from the id. Passing their path would clobber `raw_path` to a
+            // fragment (last-writer-wins via COALESCE). Claude Code names the main
+            // transcript `<sessionId>.jsonl`, so stem == id identifies it. Pass
+            // None for sidechains and let upsert keep the main path.
+            let raw_path = if file_stem(path) == session_id { raw_rel.to_str() } else { None };
             index.upsert_session(
                 &session_id,
                 &project_path,
                 parsed.timestamp.as_deref().unwrap_or(""),
-                raw_rel.to_str(),
+                raw_path,
             )?;
             for (i, entry) in parsed.entries.iter().enumerate() {
                 match entry {

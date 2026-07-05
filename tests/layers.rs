@@ -98,6 +98,48 @@ fn multiple_text_blocks_on_one_line_are_all_indexed() {
     assert_eq!(index.search("omega", 10).unwrap().len(), 1, "second text block indexed");
 }
 
+/// A session's `raw_path` must point at its *main* transcript, never at a
+/// subagent sidechain file. Sidechains carry the parent's `sessionId` (so they
+/// fold into the same session) but live at `<id>/subagents/agent-*.jsonl`;
+/// letting one set `raw_path` would clobber the pointer to a fragment. Both
+/// sync orderings must converge to the main transcript.
+#[test]
+fn raw_path_points_at_main_transcript_not_sidechain() {
+    for sidechain_first in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join("store");
+        let watch = tmp.path().join("projects");
+        let src = watch.join("proj");
+        let sid = "11111111-1111-1111-1111-111111111111";
+        // Main transcript is `<sid>.jsonl`; the sidechain lives under
+        // `<sid>/subagents/` but its lines carry the same sessionId.
+        let main = src.join(format!("{sid}.jsonl"));
+        let side = src.join(sid).join("subagents").join("agent-x.jsonl");
+        fs::create_dir_all(side.parent().unwrap()).unwrap();
+        fs::write(&main, format!("{}\n", line(sid, "/home/me/proj", "user", "main convo"))).unwrap();
+        fs::write(&side, format!("{}\n", line(sid, "/home/me/proj", "assistant", "subagent work"))).unwrap();
+
+        let cfg = test_config(store.clone(), watch, all_layers());
+        let mut engine = Engine::new(cfg).unwrap();
+        let order: [&std::path::Path; 2] =
+            if sidechain_first { [&side, &main] } else { [&main, &side] };
+        for p in order {
+            engine.sync_file(p).unwrap();
+        }
+
+        let index = Index::open(&store.join("index.db")).unwrap();
+        let raw_path: Option<String> = index
+            .conn
+            .query_row("SELECT raw_path FROM sessions WHERE id = ?1", [sid], |r| r.get(0))
+            .unwrap();
+        let raw_path = raw_path.expect("session row has a raw_path");
+        assert!(
+            raw_path.ends_with(&format!("{sid}.jsonl")) && !raw_path.contains("subagents"),
+            "raw_path must point at the main transcript (sidechain_first={sidechain_first}), got {raw_path}"
+        );
+    }
+}
+
 /// A tool-only row has empty `content`; its searchable text lives in
 /// `tool_input`/`tool_output`. The snippet must come from the matched column,
 /// not a blank column 0.
