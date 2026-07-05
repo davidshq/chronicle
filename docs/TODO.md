@@ -47,9 +47,18 @@ for the normative requirements and scenarios.
 
 ## Smaller follow-ups
 
-- **Timed index debounce.** `index_debounce_ms` exists in config but is not yet
-  wired to a timer; SQLite/FTS inserts are currently batched per file-sync.
-  Add a debounce so bursts of rapid writes coalesce into fewer index commits.
+- **Timed index debounce (deferred — low value, easy to get wrong).**
+  `index_debounce_ms` exists in config but is not wired to a timer; index
+  inserts commit inline per `sync_file`. Deferring commits onto a timer is
+  **not** a safe drop-in: the offset must still persist immediately (or raw
+  double-appends on restart), so a crash between offset-persist and the
+  deferred index commit leaves the offset *past* uncommitted index rows — a
+  silent index gap, recoverable only by `chronicle rebuild`. Doing it correctly
+  means giving the index its own durable watermark and reconciling raw
+  watermark→offset on startup — a real change to durability-critical code.
+  And the payoff is small: WAL + `synchronous=NORMAL` already makes commits
+  cheap (no fsync until checkpoint). Revisit only if a profile shows index
+  writes are actually a bottleneck; the watermark design above is the path.
 
 ## Phase 9 — Cross-tool capture (future, not v1)
 
