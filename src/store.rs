@@ -93,7 +93,28 @@ impl Heartbeat {
 #[cfg(unix)]
 pub fn process_alive(pid: u32) -> bool {
     // signal 0 performs error checking without sending a signal.
-    unsafe { libc_kill(pid as i32, 0) == 0 }
+    if unsafe { libc_kill(pid as i32, 0) } != 0 {
+        return false;
+    }
+    // A process can always vouch for itself (and tests use their own pid as a
+    // stand-in for a live daemon).
+    if pid == std::process::id() {
+        return true;
+    }
+    // Linux only: guard against PID reuse. `kill(0)` proves *some* process holds
+    // this pid, not that it's our daemon — a recycled pid would otherwise read as
+    // healthy. If /proc exposes the command line and it doesn't mention
+    // chronicle, treat the recorded daemon as gone. Best-effort: if /proc is
+    // absent (macOS) or unreadable, fall back to the bare `kill(0)` result.
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(cmdline) = std::fs::read(format!("/proc/{pid}/cmdline")) {
+            if !cmdline.is_empty() {
+                return String::from_utf8_lossy(&cmdline).contains("chronicle");
+            }
+        }
+    }
+    true
 }
 
 #[cfg(unix)]

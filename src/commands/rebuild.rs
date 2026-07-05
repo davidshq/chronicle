@@ -4,7 +4,7 @@
 //! can be deleted and reconstructed entirely from `raw/`, with no data loss.
 
 use crate::capture::Engine;
-use crate::store::Store;
+use crate::store::{process_alive, Heartbeat, Store};
 use anyhow::{Context, Result};
 use clap::Args;
 use std::path::{Path, PathBuf};
@@ -65,9 +65,36 @@ fn clear_derived_markdown(markdown_dir: &Path) -> Result<()> {
 pub struct RebuildArgs {
     #[arg(long)]
     store: Option<PathBuf>,
+    /// Rebuild even if the capture daemon appears to be running. Unsafe: dropping
+    /// index.db out from under a live daemon leaves it writing to the orphaned
+    /// (unlinked) file, silently losing everything it captures until it restarts.
+    #[arg(long)]
+    force: bool,
+}
+
+/// The pid of a live capture daemon for this store, if one is running. Used to
+/// refuse a rebuild that would wipe the index out from under it.
+fn live_daemon_pid(store_override: Option<PathBuf>) -> Result<Option<u32>> {
+    let cfg = super::load_config(store_override)?;
+    let store = Store::new(cfg.store_dir.clone());
+    match Heartbeat::read(&store.heartbeat_path())? {
+        Some(hb) if process_alive(hb.pid) => Ok(Some(hb.pid)),
+        _ => Ok(None),
+    }
 }
 
 pub fn run(args: RebuildArgs) -> Result<()> {
+    if !args.force {
+        if let Some(pid) = live_daemon_pid(args.store.clone())? {
+            anyhow::bail!(
+                "the capture daemon (pid {pid}) appears to be running. Rebuilding now \
+                 would delete index.db out from under it and silently lose writes. Stop \
+                 it first (Linux: `systemctl --user stop chronicle`; macOS: `launchctl \
+                 unload ~/Library/LaunchAgents/com.davidshq.chronicle.plist`), then \
+                 re-run — or pass --force to override."
+            );
+        }
+    }
     let n = rebuild(args.store)?;
     println!("Rebuilt derived layers from raw archive: {n} line(s) reprocessed.");
     Ok(())

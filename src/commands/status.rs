@@ -50,7 +50,10 @@ pub fn run(args: StatusArgs) -> Result<()> {
     println!("\n{heading} ({}):", sessions.len());
     for s in sessions {
         let project = s.project_path.rsplit('/').next().unwrap_or(&s.project_path);
-        println!("• {} — {} ({} msgs) [{}]", s.started_at, project, s.message_count, &s.id[..s.id.len().min(8)]);
+        // `message_count` counts indexed entries (a line can carry several), and
+        // char-based truncation avoids ever slicing a non-ASCII id mid-codepoint.
+        let short_id: String = s.id.chars().take(8).collect();
+        println!("• {} — {} ({} entries) [{}]", s.started_at, project, s.message_count, short_id);
     }
     Ok(())
 }

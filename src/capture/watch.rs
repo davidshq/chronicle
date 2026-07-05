@@ -58,7 +58,16 @@ pub fn run(mut engine: Engine, watch_dirs: &[std::path::PathBuf]) -> Result<()> 
             }
             Ok(Err(e)) => eprintln!("[chronicle] watch error: {e}"),
             Err(RecvTimeoutError::Timeout) => {
-                // Idle interval elapsed: refresh liveness without a capture.
+                // Idle interval elapsed. Before refreshing liveness, do a full
+                // reconciling scan as a safety net: `notify` can coalesce or drop
+                // events under load, and the last write to a since-idle file would
+                // otherwise stay uncaptured until its next event or a daemon
+                // restart. The scan is cheap — every up-to-date file short-circuits
+                // on the offset check in `sync_file` — and `scan_all` bumps
+                // `last_sync` itself if it captures anything.
+                if let Err(e) = engine.scan_all() {
+                    eprintln!("[chronicle] periodic scan error: {e}");
+                }
                 engine.tick_heartbeat().ok();
             }
             // The watcher was dropped and the channel closed: nothing more to do.
