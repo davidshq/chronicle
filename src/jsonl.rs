@@ -13,8 +13,8 @@ use serde_json::Value;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
     Text { role: String, text: String },
-    ToolUse { name: String, input: Value },
-    ToolResult { content: String },
+    ToolUse { id: Option<String>, name: String, input: Value },
+    ToolResult { tool_use_id: Option<String>, content: String },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -88,17 +88,19 @@ fn parse_block(block: &Value, role: &str) -> Option<Entry> {
             }
         }
         "tool_use" => {
+            let id = str_field(block, "id");
             let name = str_field(block, "name").unwrap_or_default();
             let input = block.get("input").cloned().unwrap_or(Value::Null);
-            Some(Entry::ToolUse { name, input })
+            Some(Entry::ToolUse { id, name, input })
         }
         "tool_result" => {
+            let tool_use_id = str_field(block, "tool_use_id");
             let content = match block.get("content") {
                 Some(Value::String(s)) => s.clone(),
                 Some(other) => other.to_string(),
                 None => String::new(),
             };
-            Some(Entry::ToolResult { content })
+            Some(Entry::ToolResult { tool_use_id, content })
         }
         _ => None,
     }
@@ -131,14 +133,28 @@ mod tests {
 
     #[test]
     fn parses_tool_use_with_full_input() {
-        let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Write","input":{"file_path":"/x","content":"BIG"}}]}}"#;
+        let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Write","input":{"file_path":"/x","content":"BIG"}}]}}"#;
         let p = parse_line(line).unwrap();
         match &p.entries[0] {
-            Entry::ToolUse { name, input } => {
+            Entry::ToolUse { id, name, input } => {
+                assert_eq!(id.as_deref(), Some("toolu_1"));
                 assert_eq!(name, "Write");
                 assert_eq!(input["content"], "BIG");
             }
             _ => panic!("expected tool_use"),
+        }
+    }
+
+    #[test]
+    fn parses_tool_result_with_use_id() {
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"OUTPUT"}]}}"#;
+        let p = parse_line(line).unwrap();
+        match &p.entries[0] {
+            Entry::ToolResult { tool_use_id, content } => {
+                assert_eq!(tool_use_id.as_deref(), Some("toolu_1"));
+                assert_eq!(content, "OUTPUT");
+            }
+            _ => panic!("expected tool_result"),
         }
     }
 

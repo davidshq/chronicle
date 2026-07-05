@@ -78,6 +78,10 @@ pub struct Config {
     pub exclude_projects: Vec<String>,
 
     /// Tool names omitted from the derived layers (raw still keeps everything).
+    /// Both the tool's *call* and its *result* are suppressed from markdown and
+    /// the index; the result is matched to its call by `tool_use_id`, so a
+    /// daemon restart between the two transcript lines may let a single straggler
+    /// result through until the next `rebuild`.
     #[serde(default)]
     pub exclude_tools: Vec<String>,
 

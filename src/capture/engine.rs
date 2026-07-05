@@ -26,6 +26,14 @@ pub struct Engine {
     /// Time of the last real capture write. Preserved across liveness-only
     /// ticks so `tick_heartbeat` can refresh `last_alive` without clobbering it.
     last_sync: String,
+    /// `tool_use_id`s of excluded tool calls whose `tool_result` has not yet
+    /// been seen, so the matching result (which arrives on a *later* transcript
+    /// line and carries no tool name) can be dropped from the derived layers
+    /// too. Ids are removed once their result is matched, so the set only holds
+    /// *in-flight* excluded calls. A daemon restart between a call and its
+    /// result loses the association (raw is unaffected; `rebuild` re-filters
+    /// correctly).
+    excluded_result_ids: std::collections::HashSet<String>,
 }
 
 impl Engine {
@@ -63,6 +71,7 @@ impl Engine {
             index,
             last_sync: started_at.clone(),
             started_at,
+            excluded_result_ids: std::collections::HashSet::new(),
         })
     }
 
@@ -139,13 +148,32 @@ impl Engine {
             Some(p) if !p.is_empty() => p,
             _ => return Ok(()),
         };
-        // Drop excluded tool calls once, up front, so *every* derived layer
+        // Drop excluded tool activity once, up front, so *every* derived layer
         // (markdown and the SQLite index) sees the same filtered entries and
         // they can't drift. Raw is untouched — it always keeps the original.
-        parsed.entries.retain(|e| !matches!(
-            e,
-            jsonl::Entry::ToolUse { name, .. } if self.cfg.is_tool_excluded(name)
-        ));
+        //
+        // First record the id of every excluded tool *call*. A tool's *result*
+        // arrives on a later transcript line with no tool name, linked only by
+        // `tool_use_id`, so this set is how we recognize it. (Separate pass to
+        // keep the `&mut self` insert out of the `retain` borrow below.)
+        for e in &parsed.entries {
+            if let jsonl::Entry::ToolUse { id: Some(id), name, .. } = e {
+                if self.cfg.is_tool_excluded(name) {
+                    self.excluded_result_ids.insert(id.clone());
+                }
+            }
+        }
+        // `remove` on a matched result keeps the set to only *in-flight* excluded
+        // calls (each call has exactly one result), so it can't grow unbounded.
+        let cfg = &self.cfg;
+        let excluded_result_ids = &mut self.excluded_result_ids;
+        parsed.entries.retain(|e| match e {
+            jsonl::Entry::ToolUse { name, .. } => !cfg.is_tool_excluded(name),
+            jsonl::Entry::ToolResult { tool_use_id: Some(id), .. } => {
+                !excluded_result_ids.remove(id)
+            }
+            _ => true,
+        });
         let session_id = parsed
             .session_id
             .clone()
@@ -178,7 +206,7 @@ impl Engine {
                             None,
                         )?;
                     }
-                    jsonl::Entry::ToolUse { name, input } => {
+                    jsonl::Entry::ToolUse { name, input, .. } => {
                         let input_json = serde_json::to_string(input).unwrap_or_default();
                         index.insert_message(
                             &session_id,
@@ -191,7 +219,7 @@ impl Engine {
                             None,
                         )?;
                     }
-                    jsonl::Entry::ToolResult { content } => {
+                    jsonl::Entry::ToolResult { content, .. } => {
                         index.insert_message(
                             &session_id,
                             None,

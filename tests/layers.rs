@@ -4,7 +4,7 @@ mod common;
 use chronicle::capture::Engine;
 use chronicle::config::Layers;
 use chronicle::db::Index;
-use common::{all_layers, line, test_config, tool_line};
+use common::{all_layers, line, test_config, tool_line, tool_result_line, tool_use_line};
 use std::fs;
 
 fn write_session(watch: &std::path::Path) -> std::path::PathBuf {
@@ -159,6 +159,116 @@ fn excluded_tools_omitted_from_all_derived_layers() {
     let sessions = index.recent_sessions(10).unwrap();
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].message_count, 2, "index omits the excluded tool row");
+}
+
+/// Excluding a tool must also drop that tool's *result* — which arrives on a
+/// later transcript line and carries no tool name, only a `tool_use_id` linking
+/// it back to the excluded call — from every derived layer, while raw keeps it.
+#[test]
+fn excluded_tool_result_omitted_from_derived_layers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let watch = tmp.path().join("projects");
+    let src = watch.join("proj");
+    fs::create_dir_all(&src).unwrap();
+    let session = src.join("s.jsonl");
+
+    let l1 = line("s1", "/home/me/proj", "user", "hello");
+    let l2 = tool_use_line("s1", "/home/me/proj", "tu_bash", "Bash", "cat secret");
+    let l3 = tool_result_line("s1", "/home/me/proj", "tu_bash", "SECRETOUTPUT");
+    fs::write(&session, format!("{l1}\n{l2}\n{l3}\n")).unwrap();
+
+    let mut cfg = test_config(store.clone(), watch, all_layers());
+    cfg.exclude_tools = vec!["Bash".to_string()];
+    let mut engine = Engine::new(cfg).unwrap();
+    engine.sync_file(&session).unwrap();
+
+    // Raw keeps the excluded tool's result verbatim.
+    let raw = fs::read_to_string(store.join("raw/proj/s.jsonl")).unwrap();
+    assert!(raw.contains("SECRETOUTPUT"), "raw archive keeps the excluded result");
+
+    // Markdown mirror must not leak the excluded tool's output.
+    let md = read_all_markdown(&store.join("markdown"));
+    assert!(!md.contains("SECRETOUTPUT"), "markdown must not leak the excluded result");
+
+    // Index must not surface the excluded tool's output either.
+    let index = Index::open(&store.join("index.db")).unwrap();
+    assert_eq!(
+        index.search("SECRETOUTPUT", 10).unwrap().len(),
+        0,
+        "index must not contain the excluded result"
+    );
+}
+
+/// A non-excluded tool's result is retained in the derived layers as normal.
+#[test]
+fn non_excluded_tool_result_is_retained() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let watch = tmp.path().join("projects");
+    let src = watch.join("proj");
+    fs::create_dir_all(&src).unwrap();
+    let session = src.join("s.jsonl");
+
+    let l1 = tool_use_line("s1", "/home/me/proj", "tu_read", "Read", "open the file");
+    let l2 = tool_result_line("s1", "/home/me/proj", "tu_read", "VISIBLEOUTPUT");
+    fs::write(&session, format!("{l1}\n{l2}\n")).unwrap();
+
+    let mut cfg = test_config(store.clone(), watch, all_layers());
+    cfg.exclude_tools = vec!["Bash".to_string()];
+    let mut engine = Engine::new(cfg).unwrap();
+    engine.sync_file(&session).unwrap();
+
+    let md = read_all_markdown(&store.join("markdown"));
+    assert!(md.contains("VISIBLEOUTPUT"), "markdown keeps the allowed result");
+
+    let index = Index::open(&store.join("index.db")).unwrap();
+    assert_eq!(
+        index.search("VISIBLEOUTPUT", 10).unwrap().len(),
+        1,
+        "index keeps the allowed result"
+    );
+}
+
+/// Rebuild replays raw in order, so it reconstructs the same filtered derived
+/// layers — both the excluded call and its result are absent after a rebuild.
+#[test]
+fn rebuild_reapplies_excluded_result_filter() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let watch = tmp.path().join("projects");
+    let src = watch.join("proj");
+    fs::create_dir_all(&src).unwrap();
+    let session = src.join("s.jsonl");
+
+    let l1 = line("s1", "/home/me/proj", "user", "hello");
+    let l2 = tool_use_line("s1", "/home/me/proj", "tu_bash", "Bash", "cat secret");
+    let l3 = tool_result_line("s1", "/home/me/proj", "tu_bash", "SECRETOUTPUT");
+    fs::write(&session, format!("{l1}\n{l2}\n{l3}\n")).unwrap();
+
+    let mut cfg = test_config(store.clone(), watch, all_layers());
+    cfg.exclude_tools = vec!["Bash".to_string()];
+    cfg.save().unwrap(); // rebuild loads config from the store
+    {
+        let mut engine = Engine::new(cfg).unwrap();
+        engine.sync_file(&session).unwrap();
+    }
+
+    // Nuke derived layers and rebuild purely from raw.
+    fs::remove_file(store.join("index.db")).ok();
+    fs::remove_dir_all(store.join("markdown")).ok();
+    chronicle::commands::rebuild::rebuild(Some(store.clone())).unwrap();
+
+    let md = read_all_markdown(&store.join("markdown"));
+    assert!(!md.contains("SECRETOUTPUT"), "rebuilt markdown omits the excluded result");
+    assert!(!md.contains("Bash"), "rebuilt markdown omits the excluded call");
+
+    let index = Index::open(&store.join("index.db")).unwrap();
+    assert_eq!(
+        index.search("SECRETOUTPUT", 10).unwrap().len(),
+        0,
+        "rebuilt index omits the excluded result"
+    );
 }
 
 fn read_all_markdown(dir: &std::path::Path) -> String {

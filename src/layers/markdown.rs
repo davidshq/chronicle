@@ -39,7 +39,7 @@ impl MarkdownMirror {
                     };
                     body.push_str(&format!("## {} ({})\n\n{}\n\n---\n\n", heading, time, text));
                 }
-                Entry::ToolUse { name, input } => {
+                Entry::ToolUse { name, input, .. } => {
                     body.push_str(&format!(
                         "### Tool: {} ({})\n\n{}\n\n",
                         name,
@@ -47,7 +47,7 @@ impl MarkdownMirror {
                         self.format_tool_input(name, input)
                     ));
                 }
-                Entry::ToolResult { content } => {
+                Entry::ToolResult { content, .. } => {
                     let out = self.truncate(content);
                     body.push_str(&format!(
                         "**Result**\n\n<details>\n<summary>Output</summary>\n\n```\n{}\n```\n</details>\n\n",
@@ -75,10 +75,12 @@ impl MarkdownMirror {
             None => "unknown-date".to_string(),
         };
         let project = sanitize(last_component(project_path));
-        let short = &session_id[..session_id.len().min(8)];
+        // Use the full session id, not an 8-char prefix: two sessions sharing a
+        // hex prefix in the same project would otherwise collide into one file.
+        let session = sanitize(session_id);
         let dir = self.root.join(&date);
         std::fs::create_dir_all(&dir)?;
-        let path = dir.join(format!("{}_{}.md", short, project));
+        let path = dir.join(format!("{}_{}.md", session, project));
         if !path.exists() {
             let header = format!(
                 "# Session: {}\n\n**Project**: `{}`\n**Started**: {}\n\n---\n\n",
