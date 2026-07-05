@@ -196,6 +196,40 @@ fn rebuild_derived_from_raw() {
     assert_eq!(hits.len(), 1, "index reconstructed from raw is searchable");
 }
 
+/// `rebuild` must preserve `markdown/imported/` — the legacy sessions that
+/// `chronicle migrate` copies out of the old ~/.claude-logs store. They have no
+/// raw archive to replay, so a blanket wipe of the markdown dir (which is what
+/// rebuild used to do) destroyed them irreversibly. Regression test for that.
+#[test]
+fn rebuild_preserves_imported_markdown() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let watch = tmp.path().join("projects");
+    let session = write_session(&watch);
+
+    let cfg = test_config(store.clone(), watch, all_layers());
+    cfg.save().unwrap(); // rebuild loads config from the store
+    {
+        let mut engine = Engine::new(cfg).unwrap();
+        engine.sync_file(&session).unwrap();
+    }
+
+    // Seed a preserved legacy import that has NO backing raw archive.
+    let imported = store.join("markdown/imported/2026-01-16");
+    fs::create_dir_all(&imported).unwrap();
+    let legacy = imported.join("legacy-session.md");
+    fs::write(&legacy, "# a session Claude Code has since deleted").unwrap();
+
+    // A rebuild reconstructs the derived date-dirs from raw...
+    chronicle::commands::rebuild::rebuild(Some(store.clone())).unwrap();
+
+    // ...but must not touch the un-reconstructable imported archive.
+    assert!(legacy.exists(), "rebuild must preserve markdown/imported/");
+    assert!(walk_count(&store.join("markdown")) >= 2, "derived markdown reconstructed alongside imported");
+    let index = Index::open(&store.join("index.db")).unwrap();
+    assert_eq!(index.search("widget", 10).unwrap().len(), 1, "derived index still rebuilt from raw");
+}
+
 /// The raw copy survives deletion of the source transcript (retention deletion).
 #[test]
 fn raw_survives_source_deletion() {

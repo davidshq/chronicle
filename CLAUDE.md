@@ -139,9 +139,16 @@ format drift degrades derived layers gracefully without ever risking raw.
   heartbeat.json                  { pid, started_at, last_sync, last_alive }  ← watchdog reads this
   state/offsets.json              per-file byte offsets (restart-safe capture)
   raw/<project>/<session>.jsonl   verbatim archive (ground truth)
-  markdown/<YYYY-MM-DD>/*.md       rendered mirror
+  markdown/<project>/<YYYY-MM-DD>/*.md   rendered mirror (derived)
+  markdown/imported/              legacy sessions from `migrate` — NOT derived
   index.db                        SQLite + FTS5
+  legacy-sessions.db              old ~/.claude-logs SQLite, preserved by `migrate`
 ```
+
+`markdown/imported/` and `legacy-sessions.db` are preserved copies of the old
+`~/.claude-logs` store (see `chronicle migrate`). Unlike the date-stamped
+markdown, `imported/` has **no raw archive to reconstruct it from**, so
+`rebuild` deliberately preserves it while wiping the rest of `markdown/`.
 
 ### Watchdog
 
