@@ -1,7 +1,7 @@
 ---
 description: Search past Claude sessions by keyword (Chronicle FTS)
 argument-hint: [query]
-allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/bin/chronicle:*)
+allowed-tools: Bash(${CHRONICLE_HOME:-$HOME/.chronicle}/bin/chronicle:*)
 ---
 
 Search past Claude sessions for: $ARGUMENTS
@@ -9,7 +9,7 @@ Search past Claude sessions for: $ARGUMENTS
 Run Chronicle's full-text search over the captured store and present the results:
 
 ```
-"${CLAUDE_PLUGIN_ROOT}/bin/chronicle" search "$ARGUMENTS"
+"${CHRONICLE_HOME:-$HOME/.chronicle}/bin/chronicle" search "$ARGUMENTS"
 ```
 
 Each hit shows the role, project, timestamp, and a matching snippet. Summarize the

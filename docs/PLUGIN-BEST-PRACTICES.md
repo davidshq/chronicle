@@ -215,7 +215,7 @@ Claude Code supports two command styles:
 | **LLM-interpreted** | Claude reads the prompt and decides what to do | Flexible, context-aware tasks |
 | **Deterministic** | Hook intercepts and runs exact code | Consistent, repeatable actions |
 
-For deterministic commands, intercept the prompt in a `UserPromptSubmit` hook and execute specific logic. This plugin uses both approaches—see the [handler.ts](../src/handler.ts) for deterministic command detection.
+For deterministic commands, intercept the prompt in a `UserPromptSubmit` hook and execute specific logic. Chronicle's slash commands are LLM-interpreted (`commands/*.md`) and simply shell out to the `chronicle` binary; its only hook is the SessionStart `watchdog` health check.
 
 Source: [Claude Code Slash Commands](https://code.claude.com/docs/en/plugins)
 
@@ -469,7 +469,7 @@ Source: [Backslash Security - Claude Code Best Practices](https://www.backslash.
 
 ### Hook Performance
 
-1. **Minimize startup time** — Use compiled languages or fast runtimes (Bun starts in <100ms vs Node's ~300ms)
+1. **Minimize startup time** — Use compiled languages or fast runtimes (a compiled Rust or Go binary starts in single-digit ms; interpreted runtimes add 100–300ms per invocation)
 2. **Avoid blocking I/O** — Use async operations where possible
 3. **Cache connections** — Reuse database/network connections across hook invocations
 4. **Set appropriate timeouts** — Default is 60 seconds; reduce for simple checks
@@ -706,10 +706,10 @@ claude plugin marketplace add username/repo-name
 claude plugin install plugin-name@marketplace-name
 ```
 
-For example, a plugin at `github.com/davidshq/claude-remember`:
+For example, a plugin at `github.com/davidshq/chronicle`:
 ```bash
-claude plugin marketplace add davidshq/claude-remember
-claude plugin install claude-remember@claude-remember
+claude plugin marketplace add davidshq/chronicle
+claude plugin install chronicle@chronicle
 ```
 
 ### Distribution Options

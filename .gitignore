@@ -1,7 +1,5 @@
 # Rust
 /target/
-# Built plugin binary (produced by scripts/install.sh)
-/bin/
 
 # IDE
 .vscode/
@@ -13,5 +11,3 @@ Thumbs.db
 
 # Claude
 .claude/settings.local.json
-
-/target/debug/**

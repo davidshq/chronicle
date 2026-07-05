@@ -4,176 +4,198 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Claude Session Logger is a **Claude Code plugin** that intercepts all conversation events via the hooks system and persists them to:
-1. **Markdown files** - Human-readable logs organized by date and session
-2. **SQLite database** - Structured, queryable storage for analytics
+Chronicle is an **external, lossless recorder for Claude Code sessions**, written
+in Rust as a single binary with git-style subcommands. It has two roles:
 
-The plugin is distributed via GitHub marketplace and installed with:
-```
-claude plugin marketplace add davidshq/claude-remember
-claude plugin install claude-remember@claude-remember
-```
+1. **Capture daemon** (`chronicle daemon`) — an always-on background service that
+   watches Claude Code's transcript JSONL files and records them. It runs
+   *outside* Claude Code, so capture does not depend on hooks firing (which fail
+   silently in long sessions, on `/exit`, and during `/compact`), and the record
+   survives Claude Code deleting its own old transcripts.
+2. **In-session plugin** — a thin client (`search` / `status` / `today` slash
+   commands plus a SessionStart health **watchdog**) that shells out to the same
+   installed binary. It does *not* capture; it queries and monitors.
+
+The binary is installed to a fixed, well-known path (`~/.chronicle/bin/chronicle`)
+that both the daemon service and the plugin reference by absolute path — a single
+source of truth so the plugin can never drift to a different version than the
+daemon writing the store.
 
 ## Commands
 
 ```bash
-# Install the plugin (users)
-claude plugin marketplace add davidshq/claude-remember
-claude plugin install claude-remember@claude-remember
+# Build / test / lint (CI runs all three; clippy is -D warnings)
+cargo build
+cargo test
+cargo clippy -- -D warnings
 
-# Uninstall
-claude plugin uninstall claude-remember@claude-remember
+# Install the binary + register the daemon service (systemd/launchd) + migrate
+./scripts/install.sh
 
-# Development: test with plugin loaded locally
-claude --plugin-dir .
+# Run the binary directly during development
+cargo run -- daemon --once          # capture everything once and exit
+cargo run -- daemon                 # live filesystem-watch capture (default)
+cargo run -- daemon --poll          # periodic-poll capture fallback
+cargo run -- status                 # capture health + recent sessions
+cargo run -- status --today         # today's (local) sessions
+cargo run -- search "query"         # FTS5 full-text search
+cargo run -- watchdog               # liveness/staleness check (hook-invoked)
+cargo run -- rebuild                # rebuild derived layers from the raw archive
+cargo run -- migrate                # import an old ~/.claude-logs store
 
-# Run tests
-bun test
-
-# Debug - manually test handler with mock event
-echo '{"hook_event_name":"SessionStart","session_id":"test","cwd":"/tmp","source":"startup"}' | bun run src/handler.ts
+# Point any subcommand at an alternate store
+cargo run -- status --store /tmp/chronicle-test
 ```
 
-## Plugin Structure
+## Repository Structure
 
 ```
-claude-remember/
+chronicle/
 ├── .claude-plugin/
-│   └── plugin.json           # Plugin manifest
+│   ├── plugin.json           # Plugin manifest
+│   └── marketplace.json      # Marketplace listing
 ├── hooks/
-│   └── hooks.json            # Hook event definitions
+│   └── hooks.json            # SessionStart → watchdog (resolves the fixed-path binary)
 ├── commands/
-│   ├── status.md             # /claude-remember:status
-│   ├── search.md             # /claude-remember:search
-│   └── today.md              # /claude-remember:today
-├── src/
-│   ├── handler.ts            # Main hook handler
-│   ├── db.ts                 # SQLite operations
-│   ├── markdown.ts           # Markdown generation
-│   ├── transcript.ts         # Transcript parsing
-│   ├── config.ts             # Configuration loading
-│   └── types.ts              # TypeScript interfaces
+│   ├── search.md             # /chronicle:search
+│   ├── status.md             # /chronicle:status
+│   └── today.md              # /chronicle:today
 ├── scripts/
-│   └── bump-version.ts       # Version management (bun run version)
-└── docs/
-    ├── ARCHITECTURE.md       # System architecture
-    ├── DEVELOPMENT.md        # Developer guide
-    └── PLUGIN-BEST-PRACTICES.md  # Guide to writing plugins
+│   └── install.sh            # build → install to ~/.chronicle/bin → service → migrate
+├── src/
+│   ├── main.rs               # CLI entry: clap subcommand dispatch
+│   ├── lib.rs                # library crate root (tests exercise this directly)
+│   ├── config.rs             # Config model + load/save (<store>/config.json)
+│   ├── db.rs                 # SQLite index + FTS5 (derived layer)
+│   ├── jsonl.rs              # lenient transcript-line parser
+│   ├── store.rs              # store layout + heartbeat + process-liveness
+│   ├── capture/
+│   │   ├── engine.rs         # the shared capture engine (sync_file hot path)
+│   │   ├── offset.rs         # restart-safe per-file byte offsets
+│   │   ├── watch.rs          # live filesystem-watch trigger (default)
+│   │   └── poll.rs           # periodic-poll trigger (fallback)
+│   ├── layers/
+│   │   ├── raw.rs            # verbatim JSONL archive (ground truth)
+│   │   └── markdown.rs       # human-readable mirror (derived)
+│   └── commands/
+│       ├── daemon.rs         # the capture service
+│       ├── search.rs         # FTS query
+│       ├── status.rs         # health + recent/today sessions
+│       ├── watchdog.rs       # liveness/staleness evaluation
+│       ├── migrate.rs        # import old ~/.claude-logs store
+│       └── rebuild.rs        # replay raw → derived layers
+├── tests/                    # integration tests (capture, layers, watchdog)
+├── openspec/                 # design rationale for the rewrite
+└── docs/                     # ARCHITECTURE, DEVELOPMENT, TODO, CODE-REVIEW
 ```
 
 ## Architecture
 
-### Data Flow
+### Data flow
 
 ```
-Claude Code Plugin System → hooks.json → handler.ts → db.ts + markdown.ts → ~/.claude-logs/
+Claude Code transcripts (~/.claude/projects/**/*.jsonl)
+   │  (filesystem watch or poll)
+   ▼
+capture::Engine::sync_file  ──►  raw archive (verbatim, byte-for-byte)
+   │                          └►  derived layers:
+   │                                • markdown mirror
+   │                                • SQLite + FTS5 index
+   ▼
+~/.chronicle/  (store: raw/, markdown/, index.db, state/, heartbeat.json)
 ```
 
-### Core Modules
+### The capture engine (`src/capture/engine.rs`)
 
-- **`src/handler.ts`** - Main entry point. Routes hook events to handlers, reads stdin, manages session state.
-- **`src/db.ts`** - SQLite operations using Bun's built-in `bun:sqlite`. Creates/migrates schema, provides CRUD for sessions, messages, tool_calls, events.
-- **`src/markdown.ts`** - Generates markdown files. Handles tool input formatting, session resume markers, file finalization.
-- **`src/transcript.ts`** - Parses Claude's JSONL transcript files to extract assistant responses on `Stop` events.
-- **`src/config.ts`** - Configuration management. Loads from `~/.claude-logs/config.json`, provides defaults, handles exclusions.
-- **`src/types.ts`** - TypeScript interfaces for all hook event types and database models.
+`sync_file` is the hot path: read bytes appended since the last persisted offset,
+process only through the **last newline** (trailing partial lines are buffered,
+never persisted), append the complete bytes verbatim to the raw archive, then
+feed each parsed line to the derived layers. The offset only ever advances to a
+newline boundary and is persisted atomically, so restarts and partial writes
+resume exactly where capture left off — no duplication, no gaps.
 
-### Hook Events Handled
+### Storage layers (each independently opt-in via `config.layers`)
 
-| Event | Handler Action |
-|-------|---------------|
-| `SessionStart` | Shows setup prompt for new projects, or creates session record |
-| `SessionEnd` | Marks session complete, finalizes markdown |
-| `UserPromptSubmit` | Logs user message |
-| `PreToolUse` | Logs tool call with inputs, starts timing |
-| `PostToolUse` | Updates tool success/duration |
-| `Stop` | Extracts assistant response from transcript |
-| `SubagentStop` | Records subagent completion |
-| `Notification` | Logs permission prompts, auth events |
-| `PermissionRequest` | Logs tool permission requests |
-| `PreCompact` | Backs up transcript before context compaction |
+- **Raw** (`layers/raw.rs`) — the lossless ground truth. Copies complete
+  transcript lines byte-for-byte, never parses/filters/truncates, append-only.
+- **Markdown** (`layers/markdown.rs`) — human-readable mirror, derived. MAY
+  truncate large tool bodies (bounded by `max_tool_output_length`) since the
+  untruncated original always lives in raw.
+- **SQLite/FTS** (`db.rs`) — full-text search index, derived. Tables:
+  `sessions`, `messages`, `tool_calls`, plus a `messages_fts` FTS5 virtual table.
+  WAL mode enabled.
 
-### Database Schema
+Derived layers can be deleted and rebuilt entirely from raw (`chronicle rebuild`)
+— raw is always the source of truth. The `jsonl.rs` parser is deliberately
+permissive: unknown shapes yield no entries rather than errors, so transcript
+format drift degrades derived layers gracefully without ever risking raw.
 
-SQLite at `~/.claude-logs/sessions.db` with tables: `sessions`, `messages`, `tool_calls`, `events`, `transcript_backups`. WAL mode enabled by default for concurrent access.
-
-### Output Structure
+### Store layout (`~/.chronicle` by default)
 
 ```
-~/.claude-logs/
-├── sessions.db
-├── config.json (optional)
-├── backups/          (transcript backups from PreCompact)
-└── sessions/
-    └── YYYY-MM-DD/   (local timezone)
-        └── {seq}_{HHMMSS}_{session_id_prefix}_{project}.md
+~/.chronicle/
+  bin/chronicle                   the installed binary (daemon + plugin both use it)
+  config.json                     settings
+  heartbeat.json                  { pid, started_at, last_sync }  ← watchdog reads this
+  state/offsets.json              per-file byte offsets (restart-safe capture)
+  raw/<project>/<session>.jsonl   verbatim archive (ground truth)
+  markdown/<YYYY-MM-DD>/*.md       rendered mirror
+  index.db                        SQLite + FTS5
 ```
 
-File naming: `01_143045_b5bc68c9_claude-remember.md` = first session of the day, started at 14:30:45, session ID starting with b5bc68c9, in the claude-remember project.
+### Watchdog
 
-### Configuration
+`chronicle watchdog` (invoked by the SessionStart hook) reads `heartbeat.json`
+and checks process liveness + freshness. It is **non-destructive and always
+exits 0** — a monitoring failure must never affect capture (which runs in the
+separate daemon). The worst case is a missed warning.
 
-**Global config** at `~/.claude-logs/config.json`:
+## Configuration
+
+Global config at `<store_dir>/config.json` (see `src/config.rs` for the full
+model). Key fields:
 
 ```json
 {
-  "logDir": "~/.claude-logs",
-  "includeToolOutputs": true,
-  "maxToolOutputLength": 2000,
-  "enableWAL": true,
-  "excludeTools": [],
-  "excludeProjects": [],
-  "debug": false,
-  "blockOnFailure": false,   // Exit non-zero on failure (blocks Claude)
-  "maxRetries": 3,           // Auto-retry attempts before giving up
-  "retryDelayMs": 2000,      // Delay between retries in ms
-  "maxSearchDays": 7         // Days to search when finding session files
+  "enabled": true,
+  "store_dir": "~/.chronicle",
+  "watch_dirs": ["~/.claude/projects"],
+  "layers": { "raw": true, "markdown": true, "sqlite": true },
+  "capture": { "mode": "live" },
+  "exclude_projects": [],
+  "exclude_tools": [],
+  "max_tool_output_length": 2000,
+  "index_debounce_ms": 30000,
+  "staleness_secs": 7200,
+  "debug": false
 }
 ```
 
-**Per-project config** at `.claude-remember.json` in project root:
-
-```json
-{
-  "enabled": true,      // Master switch (default: true)
-  "logDir": "/path",    // Custom log directory
-  "dbPath": "/path/db", // Custom SQLite path (for data isolation)
-  "markdown": true,     // Enable markdown logging
-  "sqlite": true        // Enable SQLite logging
-}
-```
-
-Any global option can also be set per-project to override.
-
-**Deterministic commands** (intercepted by hook, run exact code):
-- `/claude-remember:disable` or "disable remember logging" - creates config with `enabled: false`
-- `/claude-remember:enable` or "enable remember logging" - creates config with `enabled: true` and starts logging
-- `/claude-remember:retry` or "retry remember logging" - retries any failed events
-
-**LLM-interpreted commands** (Claude interprets the prompt):
-- `/claude-remember:status` - shows logging status and recent sessions
-- `/claude-remember:search <query>` - searches past sessions
-- `/claude-remember:today` - lists today's sessions
+`capture.mode` is `"live"` (filesystem-watch) or `"poll"` (with `interval_ms`).
+Raw capture is **never** truncated; `max_tool_output_length` bounds only markdown.
 
 ## Code Quality
 
-- **Check for deprecated APIs** - Before using Bun APIs, verify they aren't deprecated by checking type definitions (look for `@deprecated` JSDoc tags). Use `db.run()` not `db.exec()`, etc.
-- **Run type checker** - Use `bunx tsc --noEmit` to catch type errors before committing
-- **Run tests** - Use `bun test` to run the test suite (81 tests across 5 files)
-- **Strict mode enabled** - `tsconfig.json` has strict mode; don't use `any` types
+- **Run the checks CI runs** — `cargo build`, `cargo test`, and
+  `cargo clippy -- -D warnings` (clippy warnings fail the build).
+- **Tests** live in `tests/` (integration, exercising the library crate) and as
+  `#[cfg(test)]` unit modules (e.g. the `jsonl` parser).
 
 ## Key Design Decisions
 
-- **Proper Claude Code plugin** - Uses `.claude-plugin/plugin.json` manifest and `hooks/hooks.json` for portable, shareable distribution
-- **Symlink installation** - Plugin installed as symlink at `~/.claude/plugins/` allowing live development without reinstall
-- **Hybrid slash commands** - Deterministic commands (`/disable`, `/enable`, `/retry`) handled by hook; LLM-interpreted commands (`/status`, `/search`, `/today`) for exploration
-- **Bun runtime** - Sub-100ms startup time critical for hook performance
-- **No external dependencies** - Uses only Bun built-ins (`bun:sqlite`, native fs)
-- **Fail-safe** - Handler always exits 0 to never block Claude Code; errors logged to stderr (configurable with `blockOnFailure`)
-- **Automatic retry** - Failed logging attempts retry with configurable delay and max attempts
-- **Database corruption recovery** - Corrupt databases are backed up and recreated automatically
-- **Deduplication** - Tracks `lastAssistantContent` to avoid duplicate transcript parsing
-- **Cross-process recovery** - `ensureSession()` recreates missing session state if hooks fire out of order
-- **Local timezone for directories** - Date folders use local time (via `toLocaleDateString`) so "today's" sessions appear in today's folder; timestamps in DB/markdown remain UTC
-- **Per-project config** - `.claude-remember.json` in project root overrides global settings; can disable logging or redirect output per-project
-- **Opt-in consent** - New projects (no config file, no existing sessions) prompt user to enable logging before recording any data. Existing users who upgrade continue logging seamlessly.
+- **External daemon, not hooks** — capture is hook-independent, so it survives
+  silent hook failures, `/exit`, `/compact`, and Claude Code's own retention
+  deletion.
+- **Raw is ground truth** — every other layer is derived and rebuildable; the
+  `rebuild` command and `tests/layers.rs` prove it.
+- **Restart-safe capture** — newline-boundary offsets persisted atomically
+  (temp file + rename); trailing partial lines are buffered, never committed.
+- **Single-source-of-truth binary** — installed at `~/.chronicle/bin/chronicle`;
+  daemon service and plugin reference it by absolute path so they can't version-
+  skew. The plugin does not bundle its own binary. Override with `CHRONICLE_HOME`.
+- **Fail-safe watchdog** — always exits 0; monitoring never blocks a session.
+- **No heavy deps** — `notify`, `rusqlite` (bundled SQLite), `serde`, `clap`,
+  `chrono`, `anyhow`, `dirs`.
+- **Migration path** — `chronicle migrate` preserves an old `~/.claude-logs`
+  store (markdown + legacy SQLite) under the Chronicle store rather than losing
+  sessions Claude Code may since have deleted.

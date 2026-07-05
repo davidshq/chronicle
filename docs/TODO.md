@@ -50,9 +50,6 @@ for the normative requirements and scenarios.
 - **Timed index debounce.** `index_debounce_ms` exists in config but is not yet
   wired to a timer; SQLite/FTS inserts are currently batched per file-sync.
   Add a debounce so bursts of rapid writes coalesce into fewer index commits.
-- **Docs refresh.** `CLAUDE.md`, `docs/ARCHITECTURE.md`, and
-  `docs/DEVELOPMENT.md` still describe the old hook-based TS plugin (Bun runtime,
-  `bun test`, hook events, etc.); rewrite them for the Rust daemon+plugin.
 - **FTS snippet column.** `search` snippets highlight the `content` column;
   tool-only rows (empty content, text in `tool_input`/`tool_output`) show a
   blank snippet. Improve snippet selection to fall back to the matched column.

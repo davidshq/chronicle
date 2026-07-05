@@ -10,16 +10,22 @@ cd "$ROOT"
 echo "==> Building chronicle (release)…"
 cargo build --release
 
-mkdir -p "$ROOT/bin"
-cp "$ROOT/target/release/chronicle" "$ROOT/bin/chronicle"
-echo "==> Installed binary at $ROOT/bin/chronicle"
+# Install to a fixed, well-known location that both the daemon service and the
+# in-session plugin reference by absolute path. This is the single source of
+# truth for the binary — one copy, so the plugin can never drift to a different
+# version than the daemon writing the store. (cf. ~/.cargo/bin, ~/.nvm.)
+CHRONICLE_HOME="${CHRONICLE_HOME:-$HOME/.chronicle}"
+BIN_DIR="$CHRONICLE_HOME/bin"
+BIN="$BIN_DIR/chronicle"
+mkdir -p "$BIN_DIR"
+cp "$ROOT/target/release/chronicle" "$BIN"
+echo "==> Installed binary at $BIN"
 
-# Also expose on PATH for the daemon service if ~/.local/bin exists.
+# Also expose on PATH for interactive use if ~/.local/bin exists.
 if [ -d "$HOME/.local/bin" ]; then
   cp "$ROOT/target/release/chronicle" "$HOME/.local/bin/chronicle"
-  echo "==> Also installed at ~/.local/bin/chronicle"
+  echo "==> Also installed at ~/.local/bin/chronicle (for interactive PATH use)"
 fi
-BIN="$ROOT/bin/chronicle"
 
 echo "==> Migrating any existing ~/.claude-logs store…"
 "$BIN" migrate || true

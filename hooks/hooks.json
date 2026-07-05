@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/chronicle\" watchdog",
+            "command": "sh -c 'B=\"${CHRONICLE_HOME:-$HOME/.chronicle}/bin/chronicle\"; [ -x \"$B\" ] && exec \"$B\" watchdog; command -v chronicle >/dev/null 2>&1 && exec chronicle watchdog; exit 0'",
             "timeout": 5
           }
         ]

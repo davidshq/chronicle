@@ -38,15 +38,28 @@ Derived layers can be deleted and rebuilt from the raw archive at any time
 
 ## Install
 
+Installation is two steps: the **binary + daemon** (does the actual capturing),
+then the **plugin** (a thin in-session client — `search` / `status` / `today` and
+the health watchdog — that shells out to the installed binary).
+
 ```bash
-# Build + install the binary and register the capture daemon as a user service
-# (systemd on Linux, launchd on macOS), and migrate any old ~/.claude-logs store:
+# 1. Build + install the binary to ~/.chronicle/bin, register the capture daemon
+#    as a user service (systemd on Linux, launchd on macOS), and migrate any old
+#    ~/.claude-logs store:
 ./scripts/install.sh
 
-# Then add the plugin (for search + the health watchdog):
+# 2. Add the plugin. It calls the binary installed in step 1 by absolute path
+#    (~/.chronicle/bin/chronicle), so step 1 is a prerequisite — the plugin does
+#    not bundle its own binary, which keeps it from ever drifting to a different
+#    version than the daemon writing your store.
 claude plugin marketplace add davidshq/chronicle
 claude plugin install chronicle@chronicle
 ```
+
+> The plugin cannot install the capture daemon itself (it's a background system
+> service, outside Claude Code's reach), so `./scripts/install.sh` is required
+> even though the plugin is added separately. If you install the binary somewhere
+> other than `~/.chronicle`, set `CHRONICLE_HOME` so the plugin can find it.
 
 ## Usage
 
@@ -67,6 +80,7 @@ Inside Claude Code, the plugin also provides `/chronicle:status`,
 
 ```
 ~/.chronicle/
+  bin/chronicle                   the installed binary (used by daemon + plugin)
   config.json                     settings (layers, capture mode, exclusions…)
   heartbeat.json                  daemon liveness/freshness (read by the watchdog)
   state/offsets.json              restart-safe per-file byte offsets
@@ -86,42 +100,6 @@ cargo clippy         # lint
 Built in Rust as a single binary with git-style subcommands. See
 `openspec/changes/chronicle-external-recorder/` for the full design rationale
 (the pivot from the old hook-based `claude-remember` plugin).
-
-## Acknowledgments
-
-Chronicle is an independent, from-scratch implementation — no code was copied
-from the projects below. They are prior art and inspiration we studied while
-designing it, and credit is due:
-
-- **[claude-vault](https://github.com/kuroko1t/claude-vault)** (kuroko1t) — the
-  closest prior art: a single Rust binary that archives Claude Code sessions to
-  SQLite+FTS. Chronicle differs by capturing *losslessly and live* (external
-  daemon vs. hook-triggered import) and keeping raw JSONL + markdown alongside
-  the index. Reading it clarified the problem space.
-- **[claude-code-trace](https://github.com/delexw/claude-code-trace)** (delexw)
-  — demonstrated that live-tailing Claude Code's JSONL transcripts is a solved,
-  reliable technique, which de-risked our capture engine.
-- **[claude-mem](https://github.com/thedotmack/claude-mem)** (thedotmack) and the
-  official **remember** plugin — the lossy "memory" approach Chronicle
-  deliberately contrasts with; studying them sharpened our lossless positioning.
-- **[ccboard](https://github.com/FlorianBruniaux/ccboard)** — prior art for a
-  Rust-based Claude Code monitoring binary.
-- Jesse Vincent's writeup on
-  **[Claude Code session continuation](https://blog.fsck.com/agent-blog/2026/02/22/claude-code-session-continuation/)**
-  — the clearest explanation of the compaction/`compact_boundary` file mechanics
-  that shaped our capture-cadence design.
-- The prior **`claude-remember`** plugin (this repo's own history, tagged
-  `v0.3.3-pre-chronicle`) — the hook-based ancestor whose markdown format and
-  SQLite schema shape were ported into Chronicle's derived layers.
-
-Built on excellent Rust crates:
-[`notify`](https://crates.io/crates/notify),
-[`rusqlite`](https://crates.io/crates/rusqlite) (bundled SQLite + FTS5),
-[`clap`](https://crates.io/crates/clap),
-[`serde`](https://crates.io/crates/serde) / `serde_json`,
-[`chrono`](https://crates.io/crates/chrono),
-[`dirs`](https://crates.io/crates/dirs),
-[`anyhow`](https://crates.io/crates/anyhow).
 
 ## License
 

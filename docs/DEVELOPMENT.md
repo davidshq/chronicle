@@ -1,294 +1,226 @@
 # Development Guide
 
-This guide covers how to set up, develop, test, and release changes to the Claude Remember plugin.
+How to set up, develop, test, and release changes to **Chronicle** — the external
+lossless recorder for Claude Code sessions (a Rust binary + a thin plugin).
 
 ## Prerequisites
 
-- [Bun](https://bun.sh/) v1.0.0 or later
+- A stable Rust toolchain (`rustup`), edition 2021
 - Git
-- Claude Code CLI (for testing)
+- Claude Code CLI (for testing the plugin end-to-end)
 
 ```bash
-# Install Bun
-curl -fsSL https://bun.sh/install | bash
+# Install Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
+
+No system SQLite is required — `rusqlite` builds a bundled copy.
 
 ## Getting Started
 
-### Clone and Setup
-
 ```bash
-git clone https://github.com/davidshq/claude-remember.git
-cd claude-remember
-bun install
+git clone https://github.com/davidshq/chronicle.git
+cd chronicle
+cargo build
 ```
 
-### Run in Development Mode
-
-Load the plugin directly from your local directory (no installation needed):
+### Run the binary directly
 
 ```bash
-claude --plugin-dir .
+# Capture everything once and exit (safe, no watching) — the quickest smoke test
+cargo run -- daemon --once
+
+# Live capture (filesystem-watch); Ctrl-C to stop
+cargo run -- daemon
+
+# Query / inspect
+cargo run -- status
+cargo run -- status --today
+cargo run -- search "some query"
+cargo run -- watchdog --json
+
+# Work against a throwaway store instead of ~/.chronicle
+cargo run -- daemon --once --store /tmp/chronicle-dev
+cargo run -- status --store /tmp/chronicle-dev
 ```
 
-This loads your local code instead of any installed version, allowing you to test changes immediately.
+`--store <dir>` is the key development flag: every subcommand accepts it, so you
+can exercise the full pipeline without touching your real `~/.chronicle`.
 
-### Run Tests
+### Run tests
 
 ```bash
-bun test
+cargo test
 ```
 
-The test suite covers:
-- `db.test.ts` - Database operations, concurrent access
-- `markdown.test.ts` - File generation, formatting
-- `handler.test.ts` - Event routing, project config
-- `transcript.test.ts` - Transcript parsing
-- `config.test.ts` - Configuration loading
+The suite is split into:
 
-### Type Check
+- `tests/capture.rs` — verbatim copy, restart-safe resume, partial-line buffering,
+  `scan_all` discovery.
+- `tests/layers.rs` — raw-only vs all-layers, rebuild-from-raw, raw surviving
+  source deletion.
+- `tests/watchdog.rs` — health `Down` / `Healthy` / `Stale` evaluation.
+- `tests/common/mod.rs` — shared helpers (`test_config`, `line`, layer presets).
+- Unit tests live inline (e.g. the `#[cfg(test)] mod tests` in `src/jsonl.rs`).
+
+Integration tests exercise the **library crate** (`src/lib.rs`), so keep public
+APIs that tests rely on exported there.
+
+### Lint
 
 ```bash
-bunx tsc --noEmit
+cargo clippy -- -D warnings
 ```
 
-Always run this before committing to catch type errors.
+CI treats clippy warnings as errors — run this before pushing.
 
 ## Project Structure
 
 ```
-claude-remember/
+chronicle/
 ├── .claude-plugin/
-│   └── plugin.json           # Plugin manifest (name, version)
+│   ├── plugin.json           # Plugin manifest
+│   └── marketplace.json      # Marketplace listing
 ├── hooks/
-│   └── hooks.json            # Hook event definitions
+│   └── hooks.json            # SessionStart → watchdog (resolves the fixed-path binary)
 ├── commands/
-│   ├── status.md             # /claude-remember:status
-│   ├── search.md             # /claude-remember:search
-│   └── today.md              # /claude-remember:today
-├── src/
-│   ├── handler.ts            # Main entry point
-│   ├── db.ts                 # SQLite operations
-│   ├── markdown.ts           # Markdown generation
-│   ├── transcript.ts         # Transcript parsing
-│   ├── config.ts             # Configuration
-│   ├── types.ts              # TypeScript interfaces
-│   └── __tests__/            # Test files
+│   ├── search.md             # /chronicle:search
+│   ├── status.md             # /chronicle:status
+│   └── today.md              # /chronicle:today
 ├── scripts/
-│   ├── install.ts            # Legacy installer
-│   ├── uninstall.ts          # Legacy uninstaller
-│   └── bump-version.ts       # Version management
-└── docs/
-    ├── ARCHITECTURE.md       # Technical design
-    ├── DEVELOPMENT.md        # This file
-    └── PLUGIN-BEST-PRACTICES.md
+│   └── install.sh            # build → install to ~/.chronicle/bin → service → migrate
+├── src/
+│   ├── main.rs               # CLI entry (clap subcommand dispatch)
+│   ├── lib.rs                # library crate root
+│   ├── config.rs             # Config model + load/save
+│   ├── db.rs                 # SQLite + FTS5 index
+│   ├── jsonl.rs              # lenient transcript parser
+│   ├── store.rs              # store layout, heartbeat, process liveness
+│   ├── capture/              # engine + offset + watch/poll triggers
+│   ├── layers/               # raw + markdown
+│   └── commands/             # daemon, search, status, watchdog, migrate, rebuild
+├── tests/                    # integration tests
+├── openspec/                 # design rationale for the rewrite
+└── docs/                     # ARCHITECTURE, DEVELOPMENT, TODO, CODE-REVIEW,
+                              # PLUGIN-BEST-PRACTICES
 ```
 
 ## Development Workflow
 
-### Making Changes
-
-1. Create a branch (optional for small fixes):
+1. Branch (optional for small fixes):
    ```bash
    git checkout -b feature/my-feature
    ```
-
-2. Make your changes
-
-3. Run tests and type check:
+2. Make your changes.
+3. Build, test, lint:
    ```bash
-   bun test && bunx tsc --noEmit
+   cargo build && cargo test && cargo clippy -- -D warnings
    ```
-
-4. Test manually with Claude Code:
+4. Exercise the real pipeline against a scratch store:
    ```bash
-   claude --plugin-dir .
+   cargo run -- daemon --once --store /tmp/chronicle-dev
+   cargo run -- status --store /tmp/chronicle-dev
    ```
+5. Commit with a descriptive message.
 
-5. Commit with a descriptive message:
-   ```bash
-   git add .
-   git commit -m "Fix: description of what was fixed"
-   ```
+### Testing the plugin inside Claude Code
 
-### Debugging
-
-#### Enable Debug Logging
-
-Create or edit `~/.claude-logs/config.json`:
-
-```json
-{
-  "debug": true
-}
-```
-
-Debug output goes to stderr and can be seen in Claude Code's verbose mode.
-
-#### Test Handler Manually
-
-Send mock events directly to the handler:
+The slash commands and the SessionStart watchdog call the binary by absolute path
+(`${CHRONICLE_HOME:-$HOME/.chronicle}/bin/chronicle`). To test them live:
 
 ```bash
-# Test SessionStart
-echo '{"hook_event_name":"SessionStart","session_id":"test-123","cwd":"/tmp","source":"startup"}' | bun run src/handler.ts
+# Put a fresh build where the plugin expects it
+mkdir -p ~/.chronicle/bin
+cp target/debug/chronicle ~/.chronicle/bin/chronicle
 
-# Test UserPromptSubmit
-echo '{"hook_event_name":"UserPromptSubmit","session_id":"test-123","cwd":"/tmp","prompt":"Hello world"}' | bun run src/handler.ts
+# Load the plugin from this checkout
+claude --plugin-dir .
 ```
 
-#### Inspect Database
+Point `CHRONICLE_HOME` at a scratch dir to avoid touching your real store while
+testing (`CHRONICLE_HOME=/tmp/chronicle-dev claude --plugin-dir .`).
+
+## Debugging
+
+### Inspect the store
 
 ```bash
-sqlite3 ~/.claude-logs/sessions.db
+STORE="${CHRONICLE_HOME:-$HOME/.chronicle}"
 
-# Recent sessions
-SELECT id, project_path, started_at, status, markdown_path FROM sessions ORDER BY started_at DESC LIMIT 5;
+# Health
+cargo run -- watchdog --json --store "$STORE"
 
-# Check for issues
-SELECT * FROM messages WHERE session_id = 'your-session-id';
+# Heartbeat + offsets
+cat "$STORE/heartbeat.json"
+cat "$STORE/state/offsets.json"
+
+# The raw ground truth
+ls -R "$STORE/raw"
+
+# Query the index directly
+sqlite3 "$STORE/index.db" \
+  "SELECT id, project_path, started_at, message_count FROM sessions ORDER BY started_at DESC LIMIT 5;"
 ```
 
-#### Check Markdown Output
+### Rebuild derived layers from raw
+
+If the index or markdown looks wrong, prove raw is intact by regenerating from it:
 
 ```bash
-ls -la ~/.claude-logs/sessions/$(date +%Y-%m-%d)/
-cat ~/.claude-logs/sessions/$(date +%Y-%m-%d)/*.md
+cargo run -- rebuild --store "$STORE"
 ```
 
-## Version Management
+This drops `index.db` and `markdown/`, then replays `raw/` through the derived
+layers with an isolated offsets file (the daemon's own offsets are untouched).
 
-The plugin uses semantic versioning. Both `plugin.json` and `package.json` must stay in sync.
+### Database locked errors
 
-### Bump Version
+The index uses WAL mode with a busy timeout. If a stray lock lingers during
+development:
 
 ```bash
-# Patch bump: 0.3.3 -> 0.3.4 (bug fixes)
-bun run version
-
-# Minor bump: 0.3.3 -> 0.4.0 (new features)
-bun run version:minor
-
-# Major bump: 0.3.3 -> 1.0.0 (breaking changes)
-bun run version:major
+sqlite3 "$STORE/index.db" "PRAGMA wal_checkpoint(TRUNCATE);"
 ```
 
-This updates both `.claude-plugin/plugin.json` and `package.json` automatically.
+## Versioning & Release
 
-### When to Bump Version
+`Cargo.toml`, `.claude-plugin/plugin.json`, and `.claude-plugin/marketplace.json`
+share a version — keep them in sync when bumping.
 
-- **Always bump** when fixing bugs that affect users
-- **Always bump** when adding new features
-- **Don't bump** for documentation-only changes, test changes, or internal refactoring that doesn't affect behavior
-
-**Important:** Claude Code caches plugins by version. If you push a fix without bumping the version, users who run `plugin marketplace update` may not get the new code.
-
-## Release Process
-
-1. Ensure all tests pass:
+1. Update the version in those three files.
+2. `cargo build && cargo test && cargo clippy -- -D warnings`.
+3. Commit and tag:
    ```bash
-   bun test && bunx tsc --noEmit
+   git commit -am "Release vX.Y.Z"
+   git tag vX.Y.Z && git push --tags
    ```
+4. CI's `release-binaries` job builds per-target binaries on tag pushes
+   (`refs/tags/v*`).
 
-2. Bump the version:
-   ```bash
-   bun run version  # or version:minor / version:major
-   ```
-
-3. Commit and push:
-   ```bash
-   git add .claude-plugin/plugin.json package.json
-   git commit -m "Release v0.3.4"
-   git push origin main
-   ```
-
-4. Users update with:
-   ```bash
-   claude plugin marketplace update claude-remember
-   ```
-
-## Common Issues
-
-### Plugin Changes Not Taking Effect
-
-When testing locally with `--plugin-dir`, changes should take effect immediately. If not:
-
-1. Check for syntax errors: `bunx tsc --noEmit`
-2. Verify you're in the right directory
-3. Restart Claude Code
-
-### Installed Plugin Not Updating
-
-If users report the update command doesn't work:
-
-1. Check if the version was bumped in `plugin.json`
-2. Verify the commit was pushed to `main`
-3. Check the installed version:
-   ```bash
-   cat ~/.claude/plugins/installed_plugins.json | grep claude-remember
-   ```
-
-### Database Locked Errors
-
-The plugin uses WAL mode for concurrent access. If you see lock errors during development:
-
-```bash
-# Force checkpoint
-sqlite3 ~/.claude-logs/sessions.db "PRAGMA wal_checkpoint(TRUNCATE);"
-```
-
-### Cross-Process State Issues
-
-Each hook invocation runs as a separate Bun process. The in-memory `activeSessions` map is empty each time. Session recovery works via:
-
-1. Database lookup (`markdown_path` column)
-2. File search by session ID in filename
-3. Creating new session if not found
-
-If markdown files aren't being written to:
-- Check that `markdown_path` is being saved to the correct database (custom `dbPath` if configured)
-- Check that file searches use the correct directory (custom `logDir` if configured)
+**Note:** Claude Code caches plugins by version, so a plugin-facing change (hook
+or command) that ships without a version bump may not reach users who run
+`plugin marketplace update`.
 
 ## Code Conventions
 
-### Error Handling
-
-- Always exit 0 from the handler (never block Claude Code)
-- Log errors to stderr
-- Use the retry mechanism for transient failures
-
-### Database Operations
-
-- Always accept optional `dbPath` parameter for per-project databases
-- Use prepared statements
-- Close connections in finally blocks
-
-### Markdown Operations
-
-- Always accept optional `customLogDir` and `customDbPath` for per-project configs
-- Thread these parameters through all functions that need them
-
-### Testing
-
-- Each test file cleans up after itself
-- Use unique session IDs to avoid conflicts
-- Test both success and error paths
-
-## Architecture Overview
-
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed technical documentation covering:
-
-- System overview and data flow
-- Component responsibilities
-- Database schema
-- Design decisions
+- **Never truncate raw.** Truncation bounds (`max_tool_output_length`) apply to
+  the markdown layer only.
+- **Derived layers must be rebuildable** — anything written to `markdown/` or
+  `index.db` must be reconstructable from `raw/` alone.
+- **Offsets advance only on newline boundaries** and are persisted atomically;
+  don't introduce a path that advances past a partial line.
+- **The watchdog and plugin commands must not fail the session** — keep the
+  watchdog exiting 0.
+- **Prefer `anyhow::Result` with `.context(...)`** for I/O error messages, as the
+  existing code does.
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes with tests
-4. Ensure `bun test` and `bunx tsc --noEmit` pass
-5. Submit a pull request
+1. Fork and branch.
+2. Make changes with tests.
+3. Ensure `cargo test` and `cargo clippy -- -D warnings` pass.
+4. Open a pull request.
 
-For bug reports and feature requests, open an issue on GitHub.
+For bug reports and feature requests, open an issue on GitHub. See
+[ARCHITECTURE.md](./ARCHITECTURE.md) for the system design and
+[TODO.md](./TODO.md) for planned work.

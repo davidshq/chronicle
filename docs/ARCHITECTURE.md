@@ -1,409 +1,249 @@
 # Architecture
 
-This document describes the architecture of Claude Session Logger, a plugin that captures Claude Code conversations and persists them to markdown files and a SQLite database.
+This document describes the architecture of **Chronicle**, an external, lossless
+recorder for Claude Code sessions. Chronicle is a single Rust binary with
+git-style subcommands, split into two roles: an always-on **capture daemon** and
+a thin **in-session plugin** (search + a health watchdog).
 
 ## System Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           Claude Code                                    │
-│                                                                          │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
-│  │ Session  │  │  User    │  │  Tool    │  │  Tool    │  │  Stop    │  │
-│  │  Start   │  │ Prompt   │  │  Pre     │  │  Post    │  │  Event   │  │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  │
-└───────┼─────────────┼─────────────┼─────────────┼─────────────┼────────┘
-        │             │             │             │             │
-        └─────────────┴─────────────┴─────────────┴─────────────┘
-                                    │
-                              Hook Events
-                             (stdin JSON)
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         handler.ts                                       │
-│                                                                          │
-│   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐                 │
-│   │   Event     │───▶│   Route     │───▶│  Handler    │                 │
-│   │   Parser    │    │   Switch    │    │  Functions  │                 │
-│   └─────────────┘    └─────────────┘    └──────┬──────┘                 │
-│                                                 │                        │
-└─────────────────────────────────────────────────┼────────────────────────┘
-                                                  │
-                          ┌───────────────────────┼───────────────────────┐
-                          │                       │                       │
-                          ▼                       ▼                       ▼
-                   ┌─────────────┐         ┌─────────────┐         ┌─────────────┐
-                   │   db.ts     │         │ markdown.ts │         │transcript.ts│
-                   │             │         │             │         │             │
-                   │  SQLite     │         │  Markdown   │         │  Transcript │
-                   │  Storage    │         │  Writer     │         │  Parser     │
-                   └──────┬──────┘         └──────┬──────┘         └─────────────┘
-                          │                       │
-                          ▼                       ▼
-                   ┌─────────────┐         ┌─────────────────────────────┐
-                   │sessions.db  │         │ sessions/YYYY-MM-DD/*.md    │
-                   └─────────────┘         └─────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                              Claude Code                                   │
+│  writes transcripts to ~/.claude/projects/<project>/<session>.jsonl        │
+└───────────────────────────────┬──────────────────────────────────────────┘
+                                 │  (append-only JSONL)
+                                 ▼
+        ┌────────────────────────────────────────────────┐
+        │        chronicle daemon (external process)      │
+        │                                                 │
+        │   trigger: filesystem-watch (live) or poll      │
+        │                     │                           │
+        │                     ▼                           │
+        │            capture::Engine::sync_file           │
+        │             (read since last offset,            │
+        │              process to last newline)           │
+        │            │            │            │           │
+        │            ▼            ▼            ▼           │
+        │         raw/         markdown/     index.db      │
+        │      (verbatim)      (derived)    (derived FTS)  │
+        └────────────────────────────────────────────────┘
+                                 │
+                                 ▼
+                          ~/.chronicle/  (the store)
+
+        ┌────────────────────────────────────────────────┐
+        │   chronicle plugin (in-session, thin client)    │
+        │                                                 │
+        │   SessionStart hook ──► `chronicle watchdog`    │
+        │       (reads heartbeat.json, warns if stale)    │
+        │   /chronicle:search ──► `chronicle search`      │
+        │   /chronicle:status ──► `chronicle status`      │
+        │   /chronicle:today  ──► `chronicle status --today`
+        └────────────────────────────────────────────────┘
 ```
 
-## Plugin Architecture
+The two roles never share process state — they communicate only through the
+store on disk (`heartbeat.json` for liveness, `index.db` for queries). Capture
+does **not** depend on hooks firing, which is the whole point: hooks fail
+silently in long sessions, on `/exit`, and during `/compact`.
 
-Claude Code plugins use a standardized structure:
+## Why an external daemon?
 
-```
-plugin-name/
-├── .claude-plugin/
-│   └── plugin.json    # Manifest: name, version, commands path, hooks path
-├── hooks/
-│   └── hooks.json     # Hook event → command mappings
-└── commands/
-    └── *.md           # Slash command prompts (LLM-interpreted)
-```
+The predecessor was a hook-based plugin that logged from inside Claude Code.
+That approach loses data whenever a hook doesn't fire, and it can't outlive
+Claude Code deleting its own transcripts. Chronicle inverts this: an independent
+process tails the transcript files, so:
 
-**Key concepts:**
-
-| Concept | Description |
-|---------|-------------|
-| `plugin.json` | Declares plugin metadata and paths to commands/hooks |
-| `hooks.json` | Maps hook events to shell commands (run via stdin) |
-| `${CLAUDE_PLUGIN_ROOT}` | Environment variable pointing to plugin directory |
-| Commands directory | Markdown files become `/plugin-name:command` slash commands |
-| Symlink installation | Plugin directory symlinked to `~/.claude/plugins/` |
-
-**Command types:**
-
-1. **LLM-interpreted** (`commands/*.md`): Claude receives the prompt and decides what to do
-2. **Deterministic** (handler intercepts): Hook code detects patterns and runs exact logic
-
-This plugin uses both: `/status`, `/search`, `/today` are LLM-interpreted; `/disable`, `/enable`, `/retry` are deterministic (intercepted by `handler.ts` on `UserPromptSubmit`).
+- Capture is **hook-independent** — it keeps working through `/compact`,
+  `/exit`, and long sessions where hooks go quiet.
+- The archive **survives retention deletion** — once bytes are copied into `raw/`,
+  they persist even after Claude Code removes the source.
+- The in-session plugin becomes a **read-only client** plus a watchdog, so a
+  monitoring failure can never affect capture.
 
 ## Data Flow
 
-### 1. Hook Invocation
+### 1. Trigger (`src/capture/watch.rs`, `src/capture/poll.rs`)
 
-Claude Code invokes the handler for each hook event, passing JSON via stdin:
+- **Live** (default): a `notify` recursive watcher blocks on the OS notification
+  channel and calls the engine only when a transcript file changes. Lightest at
+  idle.
+- **Poll** (fallback): a fixed-interval loop calls `scan_all` where filesystem-
+  watch APIs are unavailable/restricted. Because transcripts are append-only, a
+  seconds-scale poll loses nothing.
 
-```json
-{
-  "hook_event_name": "UserPromptSubmit",
-  "session_id": "abc123...",
-  "cwd": "/path/to/project",
-  "transcript_path": "/path/to/.claude/projects/.../transcript.jsonl",
-  "prompt": "Help me fix the bug"
-}
-```
+Both call into one shared `Engine`; the trigger only decides *when*.
 
-### 2. Event Processing
+### 2. Capture engine (`src/capture/engine.rs`)
 
-The handler (`src/handler.ts`) performs these steps:
+`sync_file` is the hot path for a single transcript file:
 
-1. **Read stdin** - Parse JSON input
-2. **Check exclusions** - Skip if project or tool is excluded
-3. **Check project config** - Load `.claude-remember.json` if present
-4. **Ensure session** - Create session record if missing (handles out-of-order hooks)
-5. **Route event** - Call appropriate handler function
-6. **Write outputs** - Update database and/or markdown (based on config)
-7. **Exit cleanly** - Always exit 0 to never block Claude
+1. `stat` the file; if it shrank below our stored offset, reset to 0 (rotation).
+2. Read the bytes appended since the last **persisted byte offset**.
+3. Find the last `\n`; process only up to it. A trailing partial line is left
+   unconsumed (buffered) — never committed until it's complete.
+4. **Raw layer:** append the complete bytes verbatim to `raw/<rel>.jsonl`.
+5. **Derived layers:** parse each complete line and feed the index + markdown.
+6. Advance the offset to the newline boundary and persist it atomically.
 
-### 3. Per-Project Configuration
+Because the offset only ever lands on a newline boundary and is persisted with a
+temp-file + rename, a daemon restart resumes exactly where it left off — no
+duplicated bytes, no skipped lines. (`tests/capture.rs` covers verbatim copy,
+restart resume, and partial-line buffering.)
 
-Each project can have a `.claude-remember.json` in its root:
+### 3. Offsets (`src/capture/offset.rs`)
 
-```json
-{
-  "enabled": true,      // Master switch (default: true)
-  "logDir": "/path",    // Custom log directory for markdown files and backups
-  "dbPath": "/path/db", // Custom SQLite database path
-  "markdown": true,     // Enable markdown logging (default: true)
-  "sqlite": true        // Enable SQLite logging (default: true)
-}
-```
+A `HashMap<file path, u64>` persisted to `state/offsets.json`. The value is the
+number of fully-consumed bytes for that file. Written atomically only when dirty.
 
-**Key functions in handler.ts:**
-- `getProjectConfig()` - Load and parse `.claude-remember.json`
-- `isProjectLoggingEnabled()` - Check if `enabled !== false`
-- `isMarkdownEnabled()` - Check if `markdown !== false`
-- `isSqliteEnabled()` - Check if `sqlite !== false`
-- `getProjectLogDir()` - Get custom `logDir` if configured
-- `getProjectDbPath()` - Get custom `dbPath` if configured
+### 4. Parsing (`src/jsonl.rs`)
 
-**User command:** Saying "disable remember logging" creates `.claude-remember.json` with `enabled: false`.
+Deliberately permissive. It extracts `session_id`, `cwd`, `timestamp`, `uuid`,
+and a list of `Entry` values (`Text`, `ToolUse`, `ToolResult`) from a line.
+Unknown shapes yield **no entries rather than an error**, so transcript-format
+drift degrades the derived layers gracefully and never risks the raw copy. Only
+the derived layers parse; the raw layer copies bytes and never depends on this.
 
-### 4. Dual Storage
+## Storage Layers
 
-Events are written to one or both storage backends (based on config):
+Each layer is independently opt-in via `config.layers`. Raw is the ground truth;
+the others are derived and can be deleted and rebuilt from raw at any time
+(`chronicle rebuild`, proven by `tests/layers.rs`).
 
-| Backend | Purpose | Format |
-|---------|---------|--------|
-| SQLite | Querying, analytics, structured data | Normalized tables with foreign keys |
-| Markdown | Human reading, git history, sharing | Formatted text with headers and code blocks |
+### Raw (`src/layers/raw.rs`)
 
-## Components
+Verbatim, byte-for-byte, append-only mirror of the source directory structure.
+Never parses, filters, or truncates. Immune to format drift; survives source
+deletion.
 
-### handler.ts
+### Markdown (`src/layers/markdown.rs`)
 
-The main entry point and event router.
+Human-readable rendering, one file per session under `markdown/<YYYY-MM-DD>/`.
+MAY truncate large tool bodies (bounded by `max_tool_output_length`) because the
+untruncated original always lives in raw. Tool-input formatting is specialized
+per tool (Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch; others fall
+back to a pretty-printed JSON block).
 
-**Responsibilities:**
-- Read and parse stdin JSON
-- Route events to handler functions
-- Manage in-memory session state (for deduplication)
-- Track tool call timing
+### SQLite + FTS (`src/db.rs`)
 
-**Key functions:**
-- `handleSessionStart()` - Create session, initialize markdown
-- `handleUserPromptSubmit()` - Log user messages
-- `handlePreToolUse()` - Log tool calls, start timing
-- `handlePostToolUse()` - Update tool results
-- `handleStop()` - Extract assistant response from transcript
-- `ensureSession()` - Create session if missing (handles out-of-order hooks)
-
-### db.ts
-
-SQLite database operations using Bun's built-in `bun:sqlite`.
-
-**Schema:**
+The queryable index. WAL mode, `busy_timeout`, `synchronous=NORMAL`.
 
 ```sql
 sessions
-├── id TEXT PRIMARY KEY
-├── project_path TEXT
-├── started_at TEXT
-├── ended_at TEXT
-├── status TEXT (active|completed|interrupted)
+├── id            TEXT PRIMARY KEY
+├── project_path  TEXT
+├── started_at    TEXT
+├── ended_at      TEXT
+├── status        TEXT DEFAULT 'active'
 ├── message_count INTEGER
-├── interface TEXT (cli|vscode|web)
-└── markdown_path TEXT
+├── markdown_path TEXT
+└── raw_path      TEXT
 
 messages
-├── id INTEGER PRIMARY KEY
-├── session_id TEXT (FK)
-├── timestamp TEXT
-├── role TEXT (user|assistant|system|tool)
-├── content TEXT
-├── tool_name TEXT
-├── tool_input TEXT
+├── id          INTEGER PRIMARY KEY
+├── session_id  TEXT
+├── uuid        TEXT
+├── timestamp   TEXT
+├── role        TEXT            -- user | assistant | system | tool
+├── content     TEXT
+├── tool_name   TEXT
+├── tool_input  TEXT
 └── tool_output TEXT
+    UNIQUE(session_id, uuid)
 
 tool_calls
-├── id INTEGER PRIMARY KEY
-├── session_id TEXT (FK)
-├── timestamp TEXT
-├── tool_name TEXT
-├── input_summary TEXT
-├── success INTEGER
-└── duration_ms INTEGER
+├── id            INTEGER PRIMARY KEY
+├── session_id    TEXT
+├── message_id    INTEGER
+├── timestamp     TEXT
+├── tool_name     TEXT
+└── input_summary TEXT
 
-events
-├── id INTEGER PRIMARY KEY
-├── session_id TEXT (FK)
-├── timestamp TEXT
-├── event_type TEXT
-├── subtype TEXT
-├── tool_name TEXT
-├── message TEXT
-└── metadata TEXT
-
-transcript_backups
-├── id INTEGER PRIMARY KEY
-├── session_id TEXT (FK)
-├── timestamp TEXT
-├── trigger TEXT
-├── transcript_path TEXT
-└── backup_path TEXT
+messages_fts  -- FTS5 virtual table over (content, tool_name, tool_input,
+              -- tool_output), external-content mirror of `messages`, kept in
+              -- sync by AFTER INSERT / AFTER DELETE triggers.
 ```
 
-**Features:**
-- WAL mode for concurrent access
-- Auto-migration for schema changes
-- Prepared statements for performance
-- Multi-database support: caches connections by path for per-project databases
+`insert_message` uses `INSERT OR IGNORE` keyed on `(session_id, uuid)` so
+re-indexing does not duplicate rows that carry a uuid.
 
-### markdown.ts
+## Store Layout (`~/.chronicle` by default)
 
-Generates human-readable markdown files.
-
-**File naming:** `{sequence}_{HHMMSS}_{session_id}_{project}.md`
-
-Example: `01_143045_b5bc68c9_my-project.md`
-- `01` - First session of the day
-- `143045` - Started at 14:30:45 local time
-- `b5bc68c9` - First 8 chars of session ID
-- `my-project` - Project folder name
-
-**Session recovery strategies:**
-1. In-memory cache (same process)
-2. Database `markdown_path` column (cross-process)
-3. Filename search by session ID (fallback)
-
-**Tool formatting:**
-- Bash: Shows command and description
-- Read/Write/Edit: Shows file path and content (truncated)
-- Glob/Grep: Shows pattern
-- WebFetch/WebSearch: Shows URL/query
-- Others: JSON dump
-
-### transcript.ts
-
-Parses Claude's JSONL transcript files.
-
-Used on `Stop` events to extract the assistant's response, since the hook doesn't include it directly.
-
-**Parsing handles:**
-- Multiple content block formats (text, tool_use, tool_result)
-- Different transcript entry structures
-- Malformed lines (skipped gracefully)
-
-### config.ts
-
-Configuration management.
-
-**Defaults:**
-```typescript
-{
-  logDir: "~/.claude-logs",
-  dbPath: "~/.claude-logs/sessions.db",
-  includeToolOutputs: true,
-  maxToolOutputLength: 2000,
-  enableWAL: true,
-  excludeTools: [],
-  excludeProjects: [],
-  debug: false
-}
+```
+~/.chronicle/
+  bin/chronicle                   the installed binary (daemon + plugin both use it)
+  config.json                     user config
+  heartbeat.json                  { pid, started_at, last_sync }  ← watchdog reads this
+  state/offsets.json              per-file byte offsets (restart-safe capture)
+  raw/<project>/<session>.jsonl   verbatim archive (ground truth)
+  markdown/<YYYY-MM-DD>/*.md       rendered mirror
+  index.db                        SQLite + FTS5
 ```
 
-**Custom config:** Create `~/.claude-logs/config.json`
+The binary lives at a fixed, well-known path so both the daemon service and the
+plugin reference it by absolute path — a single source of truth, so the plugin
+can never drift to a different version than the daemon writing the store.
+Override the location with the `CHRONICLE_HOME` environment variable.
 
-### types.ts
+## The Watchdog (`src/commands/watchdog.rs`)
 
-TypeScript interfaces for:
-- All 10 hook event input types
-- Database record types
-- Tool input types (Bash, Read, Write, Edit, etc.)
-- Transcript message formats
+Invoked by the SessionStart hook. Reads `heartbeat.json` and reports one of:
+
+- **Healthy** — process alive and `last_sync` within `staleness_secs`.
+- **Stale** — process alive but `last_sync` older than `staleness_secs`.
+- **Down** — no heartbeat, or the recorded pid is not alive.
+
+It is **non-destructive and always exits 0**. Capture runs in the separate
+daemon, so the worst a watchdog failure can do is miss a warning.
+
+## Subcommands (`src/commands/`)
+
+| Command | Role | Notes |
+|---------|------|-------|
+| `daemon` | capture | live/poll/`--once`; honors `enabled=false` by idling |
+| `search` | plugin | FTS5 query over `index.db` |
+| `status` | plugin | watchdog health + recent (or `--today`) sessions |
+| `watchdog` | plugin | liveness/staleness check for the SessionStart hook |
+| `rebuild` | maintenance | drop derived layers, replay from `raw/` |
+| `migrate` | one-time | import an old `~/.claude-logs` store |
 
 ## Design Decisions
 
-### Why Bun?
+### Raw is the source of truth
 
-Hook handlers must be fast (<100ms). Bun provides:
-- Sub-100ms cold start (vs ~300ms for Node.js)
-- Built-in SQLite (`bun:sqlite`)
-- Native TypeScript execution
-- Fast file I/O
+Every other layer is derived and disposable. `rebuild` replays `raw/` back
+through the derived layers with an isolated offsets file, and a test asserts the
+reconstructed index is searchable — so "raw is ground truth" is verified, not
+just claimed.
 
-### Why dual storage?
+### Restart-safe by construction
 
-| Use Case | Best Backend |
-|----------|--------------|
-| "What did I do yesterday?" | Markdown (browse files) |
-| "How often do I use Bash?" | SQLite (query) |
-| "Show me session X" | Either |
-| "Share this conversation" | Markdown (copy file) |
-| "Build analytics dashboard" | SQLite (structured) |
-| "Keep client data separate" | Per-project dbPath |
+Newline-boundary offsets + atomic persistence mean the capture position is always
+consistent with the bytes actually written. Partial lines are buffered rather
+than committed, so a crash mid-write never corrupts a layer.
 
-### Why always exit 0?
+### Fail-safe monitoring
 
-The handler should never block Claude Code. If logging fails:
-1. Log error to stderr
-2. Exit 0 anyway
-3. User continues working uninterrupted
+The watchdog and any plugin command must never impede a session. The watchdog
+always exits 0; capture is entirely decoupled from it.
 
-Logging is observability, not critical path.
+### Minimal dependencies
+
+`notify` (filesystem events), `rusqlite` with bundled SQLite (no system dep),
+`serde`/`serde_json`, `clap`, `chrono`, `anyhow`, `dirs`. Release profile is
+size-optimized (`opt-level = "z"`, LTO, stripped).
 
 ### Timezone handling
 
-| What | Timezone | Why |
-|------|----------|-----|
-| Directory names | Local | "Today's" sessions in today's folder |
-| Timestamps in DB | UTC | Standard for data storage |
-| Timestamps in markdown | UTC | Consistent, unambiguous |
-| File time in name | Local | Matches directory |
+Timestamps are stored verbatim from the transcript (UTC). `status --today` and
+markdown date-folder bucketing currently derive dates from those timestamps; see
+`docs/CODE-REVIEW.md` for the known local-vs-UTC nuance around midnight.
 
-### Session recovery
+## Migration from the old plugin
 
-Sessions can be resumed across process restarts:
-
-1. **Check database** - `markdown_path` column stores full path
-2. **Search directories** - Find file containing session ID
-3. **Create new** - If truly new session
-
-This handles:
-- Claude Code restarts
-- Hook firing out of order
-- Timezone transitions (file in "wrong" date directory)
-
-## File Structure
-
-```
-claude-remember/
-├── .claude-plugin/
-│   └── plugin.json       # Plugin manifest (name, version, commands, hooks paths)
-├── hooks/
-│   └── hooks.json        # Hook event definitions (uses ${CLAUDE_PLUGIN_ROOT})
-├── commands/
-│   ├── status.md         # /claude-remember:status (LLM-interpreted)
-│   ├── search.md         # /claude-remember:search (LLM-interpreted)
-│   └── today.md          # /claude-remember:today (LLM-interpreted)
-├── src/
-│   ├── handler.ts        # Entry point, event routing, deterministic commands
-│   ├── db.ts             # SQLite operations
-│   ├── markdown.ts       # Markdown generation
-│   ├── transcript.ts     # Transcript parsing
-│   ├── config.ts         # Configuration
-│   └── types.ts          # TypeScript interfaces
-├── scripts/
-│   ├── install.ts        # Create symlink, enable plugin
-│   └── uninstall.ts      # Remove symlink, disable plugin
-├── docs/
-│   ├── ARCHITECTURE.md          # This file
-│   └── PLUGIN-BEST-PRACTICES.md # Guide to writing Claude Code plugins
-├── CLAUDE.md             # Claude Code guidance
-├── README.md             # User documentation
-└── package.json
-```
-
-**Plugin installation:**
-- Symlinked to `~/.claude/plugins/claude-remember`
-- Registered in `~/.claude/settings.json` as `claude-remember@local`
-
-## Output Structure
-
-**Default location (`~/.claude-logs/`):**
-
-```
-~/.claude-logs/
-├── sessions.db                              # SQLite database (always here)
-├── config.json                              # Optional global config
-├── backups/                                 # Transcript backups (PreCompact)
-│   └── b5bc68c9_2026-01-16T14-30-45.jsonl
-└── sessions/
-    ├── 2026-01-15/
-    │   └── 01_093000_a1b2c3d4_project-a.md
-    └── 2026-01-16/
-        ├── 01_090000_b5bc68c9_project-b.md
-        └── 02_143045_c6d7e8f9_project-b.md
-```
-
-**Custom logDir and dbPath (per-project):**
-
-If a project has `.claude-remember.json` with custom paths, its data goes there instead:
-
-```json
-{
-  "logDir": "/custom/path",
-  "dbPath": "/custom/path/sessions.db"
-}
-```
-
-```
-/custom/path/
-├── sessions.db                              # Project-specific SQLite database
-├── backups/                                 # Project-specific transcript backups
-└── sessions/
-    └── 2026-01-16/
-        └── 01_143045_abc12345_my-project.md
-```
-
-This allows complete data isolation between projects - useful when working with different clients whose data should not be co-mingled.
+`chronicle migrate` preserves an existing `~/.claude-logs` store from the old
+hook-based `claude-remember` plugin: markdown sessions are copied under
+`markdown/imported/` and the legacy SQLite db is kept as `legacy-sessions.db`,
+rather than lost. Fresh capture then comes from the daemon reading
+`~/.claude/projects`.

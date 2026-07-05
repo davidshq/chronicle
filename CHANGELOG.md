@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - Chronicle (Rust rewrite)
+
+### Changed
+- **Breaking — complete pivot.** Replaced the hook-based `claude-remember`
+  TypeScript/Bun plugin with **Chronicle**: an external, lossless recorder
+  written in Rust as a single binary with git-style subcommands. Capture now runs
+  in a standalone daemon that tails Claude Code's transcript files, so it no
+  longer depends on hooks firing (which fail silently on long sessions, `/exit`,
+  and `/compact`) and survives Claude Code deleting its own transcripts.
+
+### Added
+- **Capture daemon** (`chronicle daemon`) with live filesystem-watch (default)
+  and periodic-poll (`--poll`) triggers, plus `--once` for one-shot capture.
+- **Layered storage**, each independently opt-in: a verbatim raw JSONL archive
+  (lossless ground truth), a derived markdown mirror, and a derived SQLite + FTS5
+  index. Derived layers rebuild from raw via `chronicle rebuild`.
+- **Restart-safe capture** via persisted newline-boundary byte offsets; trailing
+  partial lines are buffered, never committed.
+- **In-session plugin** as a thin client: `/chronicle:search`,
+  `/chronicle:status`, `/chronicle:today`, and a SessionStart **watchdog** hook
+  that warns when the recorder is down or stale (it never captures).
+- **Single-source-of-truth binary** installed to `~/.chronicle/bin/chronicle`
+  (override with `CHRONICLE_HOME`); the daemon service and the plugin both
+  reference it by absolute path, so they cannot version-skew.
+- `chronicle migrate` to preserve an existing `~/.claude-logs` store.
+- `scripts/install.sh` to build, install, register a user service
+  (systemd/launchd), and migrate.
+
+### Removed
+- The TypeScript/Bun handler, per-event hook wiring, `.claude-remember.json`
+  per-project config, and the Bun test suite — superseded by the daemon and the
+  Rust integration tests.
+
 ## [0.3.1] - 2026-01-17
 
 ### Added

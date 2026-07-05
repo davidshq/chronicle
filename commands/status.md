@@ -1,12 +1,12 @@
 ---
 description: Show Chronicle capture health and recent sessions
-allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/bin/chronicle:*)
+allowed-tools: Bash(${CHRONICLE_HOME:-$HOME/.chronicle}/bin/chronicle:*)
 ---
 
 Run the Chronicle status command and present its output to the user:
 
 ```
-"${CLAUDE_PLUGIN_ROOT}/bin/chronicle" status
+"${CHRONICLE_HOME:-$HOME/.chronicle}/bin/chronicle" status
 ```
 
 This reports:
