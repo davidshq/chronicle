@@ -191,4 +191,9 @@ impl Config {
             .iter()
             .any(|ex| project_path.contains(ex))
     }
+
+    /// A tool whose calls are omitted from every derived layer (raw keeps all).
+    pub fn is_tool_excluded(&self, tool_name: &str) -> bool {
+        self.exclude_tools.iter().any(|t| t == tool_name)
+    }
 }

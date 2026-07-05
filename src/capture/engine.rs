@@ -135,10 +135,17 @@ impl Engine {
         if self.md.is_none() && self.index.is_none() {
             return Ok(());
         }
-        let parsed = match jsonl::parse_line(line) {
+        let mut parsed = match jsonl::parse_line(line) {
             Some(p) if !p.is_empty() => p,
             _ => return Ok(()),
         };
+        // Drop excluded tool calls once, up front, so *every* derived layer
+        // (markdown and the SQLite index) sees the same filtered entries and
+        // they can't drift. Raw is untouched — it always keeps the original.
+        parsed.entries.retain(|e| !matches!(
+            e,
+            jsonl::Entry::ToolUse { name, .. } if self.cfg.is_tool_excluded(name)
+        ));
         let session_id = parsed
             .session_id
             .clone()
@@ -172,9 +179,6 @@ impl Engine {
                         )?;
                     }
                     jsonl::Entry::ToolUse { name, input } => {
-                        if self.cfg.exclude_tools.iter().any(|t| t == name) {
-                            continue;
-                        }
                         let input_json = serde_json::to_string(input).unwrap_or_default();
                         index.insert_message(
                             &session_id,

@@ -34,3 +34,11 @@ pub fn line(session: &str, cwd: &str, role: &str, text: &str) -> String {
         r#"{{"type":"{role}","uuid":"{uuid}","sessionId":"{session}","cwd":"{cwd}","timestamp":"2026-07-04T10:00:00Z","message":{{"role":"{role}","content":"{text}"}}}}"#,
     )
 }
+
+/// An assistant transcript line invoking a single tool (`tool_use` block).
+pub fn tool_line(session: &str, cwd: &str, tool: &str, command: &str) -> String {
+    let uuid = format!("{session}-{tool}");
+    format!(
+        r#"{{"type":"assistant","uuid":"{uuid}","sessionId":"{session}","cwd":"{cwd}","timestamp":"2026-07-04T10:00:00Z","message":{{"role":"assistant","content":[{{"type":"tool_use","name":"{tool}","input":{{"command":"{command}"}}}}]}}}}"#,
+    )
+}
