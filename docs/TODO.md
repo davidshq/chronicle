@@ -50,12 +50,11 @@ for the normative requirements and scenarios.
 - **Timed index debounce.** `index_debounce_ms` exists in config but is not yet
   wired to a timer; SQLite/FTS inserts are currently batched per file-sync.
   Add a debounce so bursts of rapid writes coalesce into fewer index commits.
-- **FTS snippet column.** `search` snippets highlight the `content` column;
-  tool-only rows (empty content, text in `tool_input`/`tool_output`) show a
-  blank snippet. Improve snippet selection to fall back to the matched column.
 
 ## Phase 9 — Cross-tool capture (future, not v1)
 
 Adapters for Codex / Cursor / Gemini: each is "a new watch path + a format
 adapter" over the same capture engine (e.g. `~/.codex/sessions`). The raw layer
 is tool-agnostic already; only the derived-layer parser needs per-tool shapes.
+
+---

@@ -35,6 +35,15 @@ pub fn line(session: &str, cwd: &str, role: &str, text: &str) -> String {
     )
 }
 
+/// An assistant transcript line carrying two `text` blocks in one message —
+/// both share the line's single uuid. Exercises per-block index keying.
+pub fn two_text_line(session: &str, cwd: &str, first: &str, second: &str) -> String {
+    let uuid = format!("{session}-multitext");
+    format!(
+        r#"{{"type":"assistant","uuid":"{uuid}","sessionId":"{session}","cwd":"{cwd}","timestamp":"2026-07-04T10:00:00Z","message":{{"role":"assistant","content":[{{"type":"text","text":"{first}"}},{{"type":"text","text":"{second}"}}]}}}}"#,
+    )
+}
+
 /// An assistant transcript line invoking a single tool (`tool_use` block).
 pub fn tool_line(session: &str, cwd: &str, tool: &str, command: &str) -> String {
     let uuid = format!("{session}-{tool}");

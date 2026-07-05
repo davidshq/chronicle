@@ -192,12 +192,19 @@ impl Engine {
                 parsed.timestamp.as_deref().unwrap_or(""),
                 raw_rel.to_str(),
             )?;
-            for entry in &parsed.entries {
+            for (i, entry) in parsed.entries.iter().enumerate() {
                 match entry {
                     jsonl::Entry::Text { role, text } => {
+                        // A single transcript line can carry several text blocks
+                        // that all share the line's uuid. Qualify the index key
+                        // with the block's ordinal so sibling blocks don't
+                        // collide on UNIQUE(session_id, uuid) — otherwise the
+                        // second is silently dropped by INSERT OR IGNORE. It's
+                        // deterministic, so re-indexing/rebuild stays idempotent.
+                        let uuid = parsed.uuid.as_ref().map(|u| format!("{u}#{i}"));
                         index.insert_message(
                             &session_id,
-                            parsed.uuid.as_deref(),
+                            uuid.as_deref(),
                             parsed.timestamp.as_deref().unwrap_or(""),
                             role,
                             text,

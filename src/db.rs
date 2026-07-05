@@ -164,8 +164,11 @@ impl Index {
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
         let phrase = fts_phrase(query);
         let mut stmt = self.conn.prepare(
+            // Column -1 lets FTS5 pick a column that actually matched, so
+            // tool-only rows (empty `content`, text in tool_name/input/output)
+            // get a real snippet instead of a blank one from column 0.
             "SELECT m.session_id, s.project_path, m.timestamp, m.role,
-                    snippet(messages_fts, 0, '[', ']', ' … ', 12)
+                    snippet(messages_fts, -1, '[', ']', ' … ', 12)
              FROM messages_fts
              JOIN messages m ON m.id = messages_fts.rowid
              JOIN sessions s ON s.id = m.session_id

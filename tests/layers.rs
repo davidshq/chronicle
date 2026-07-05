@@ -4,7 +4,9 @@ mod common;
 use chronicle::capture::Engine;
 use chronicle::config::Layers;
 use chronicle::db::Index;
-use common::{all_layers, line, test_config, tool_line, tool_result_line, tool_use_line};
+use common::{
+    all_layers, line, test_config, tool_line, tool_result_line, tool_use_line, two_text_line,
+};
 use std::fs;
 
 fn write_session(watch: &std::path::Path) -> std::path::PathBuf {
@@ -71,6 +73,57 @@ fn search_tolerates_fts_special_characters() {
     for q in ["foo-bar", "unbalanced \" quote", "a:b", "NEAR(", "*"] {
         assert!(index.search(q, 10).is_ok(), "query {q:?} must not error");
     }
+}
+
+/// A single transcript line with two `text` blocks shares one uuid. Both blocks
+/// must land in the index — before per-block keying the second collided on
+/// UNIQUE(session_id, uuid) and was silently dropped by INSERT OR IGNORE.
+#[test]
+fn multiple_text_blocks_on_one_line_are_all_indexed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let watch = tmp.path().join("projects");
+    let src = watch.join("proj");
+    fs::create_dir_all(&src).unwrap();
+    let session = src.join("s.jsonl");
+    let l = two_text_line("s1", "/home/me/proj", "alpha block", "omega block");
+    fs::write(&session, format!("{l}\n")).unwrap();
+
+    let cfg = test_config(store.clone(), watch, all_layers());
+    let mut engine = Engine::new(cfg).unwrap();
+    engine.sync_file(&session).unwrap();
+
+    let index = Index::open(&store.join("index.db")).unwrap();
+    assert_eq!(index.search("alpha", 10).unwrap().len(), 1, "first text block indexed");
+    assert_eq!(index.search("omega", 10).unwrap().len(), 1, "second text block indexed");
+}
+
+/// A tool-only row has empty `content`; its searchable text lives in
+/// `tool_input`/`tool_output`. The snippet must come from the matched column,
+/// not a blank column 0.
+#[test]
+fn search_snippet_falls_back_to_matched_tool_column() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let watch = tmp.path().join("projects");
+    let src = watch.join("proj");
+    fs::create_dir_all(&src).unwrap();
+    let session = src.join("s.jsonl");
+    let l = tool_line("s1", "/home/me/proj", "Bash", "distinctivecommand");
+    fs::write(&session, format!("{l}\n")).unwrap();
+
+    let cfg = test_config(store.clone(), watch, all_layers());
+    let mut engine = Engine::new(cfg).unwrap();
+    engine.sync_file(&session).unwrap();
+
+    let index = Index::open(&store.join("index.db")).unwrap();
+    let hits = index.search("distinctivecommand", 10).unwrap();
+    assert_eq!(hits.len(), 1, "tool input is searchable");
+    assert!(
+        hits[0].snippet.contains("distinctivecommand"),
+        "snippet is drawn from the matched tool column, got {:?}",
+        hits[0].snippet
+    );
 }
 
 /// Derived layers can be deleted and rebuilt entirely from the raw archive.
