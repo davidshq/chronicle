@@ -39,7 +39,8 @@ pub fn run(args: StatusArgs) -> Result<()> {
     }
     let index = Index::open(&db_path)?;
     let sessions = if args.today {
-        index.sessions_on_date(&super::today_local())?
+        let (start, end) = crate::time::today_local_utc_bounds();
+        index.sessions_in_range(&start, &end)?
     } else {
         index.recent_sessions(args.limit)?
     };

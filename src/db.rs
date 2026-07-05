@@ -197,15 +197,17 @@ impl Index {
         Ok(rows)
     }
 
-    /// Sessions whose `started_at` falls on the given local date (YYYY-MM-DD).
-    pub fn sessions_on_date(&self, date_prefix: &str) -> Result<Vec<SessionRow>> {
+    /// Sessions whose UTC `started_at` falls in the half-open range
+    /// `[start, end)` (both RFC3339 UTC strings). A local calendar day maps to
+    /// such a UTC range — see `crate::time::today_local_utc_bounds`.
+    pub fn sessions_in_range(&self, start: &str, end: &str) -> Result<Vec<SessionRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, project_path, started_at, message_count
-             FROM sessions WHERE started_at LIKE ?1 || '%'
+             FROM sessions WHERE started_at >= ?1 AND started_at < ?2
              ORDER BY started_at ASC",
         )?;
         let rows = stmt
-            .query_map(params![date_prefix], map_session)?
+            .query_map(params![start, end], map_session)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }

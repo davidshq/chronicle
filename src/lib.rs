@@ -6,6 +6,7 @@ pub mod config;
 pub mod db;
 pub mod jsonl;
 pub mod store;
+pub mod time;
 
 pub mod capture;
 pub mod commands;

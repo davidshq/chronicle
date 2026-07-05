@@ -66,12 +66,14 @@ impl MarkdownMirror {
         if let Some(p) = self.paths.get(session_id) {
             return Ok(p.clone());
         }
-        let date = line
-            .timestamp
-            .as_deref()
-            .and_then(|t| t.get(0..10))
-            .unwrap_or("unknown-date")
-            .to_string();
+        // Group by the session's *local* calendar day, not the raw UTC date
+        // slice, so sessions near midnight file under the right folder. Fall
+        // back to the raw prefix if the timestamp can't be parsed.
+        let date = match line.timestamp.as_deref() {
+            Some(t) => crate::time::local_date(t)
+                .unwrap_or_else(|| t.get(0..10).unwrap_or("unknown-date").to_string()),
+            None => "unknown-date".to_string(),
+        };
         let project = sanitize(last_component(project_path));
         let short = &session_id[..session_id.len().min(8)];
         let dir = self.root.join(&date);
