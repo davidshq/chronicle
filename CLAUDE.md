@@ -132,9 +132,14 @@ format drift degrades derived layers gracefully without ever risking raw.
 
 ### Store layout (`~/.chronicle` by default)
 
+`~/.chronicle` is a fixed **anchor** (binary + a `store-path` pointer); the store
+itself lives there by default, or wherever `store-path` points (see
+`resolve_store_dir`, or `install.sh --store`).
+
 ```
 ~/.chronicle/
   bin/chronicle                   the installed binary (daemon + plugin both use it)
+  store-path                      one-line pointer to the store (absent ⇒ store is the anchor)
   config.json                     settings
   heartbeat.json                  { pid, started_at, last_sync, last_alive }  ← watchdog reads this
   state/offsets.json              per-file byte offsets (restart-safe capture)
@@ -178,11 +183,13 @@ model). Key fields:
 }
 ```
 
-`store_dir` is **not** a relocation knob: it is resolved at load time from
-`--store` or `$CHRONICLE_HOME` (default `~/.chronicle`) and always overwritten
-with that value, because the config file itself lives inside the store. To put
-the store elsewhere, set `CHRONICLE_HOME` before `install.sh` (it's baked into
-the service unit) — see the README's "Storing your data somewhere else".
+`store_dir` is **not** a relocation knob: it's resolved at load time by
+`resolve_store_dir` (explicit `--store`, else the `~/.chronicle/store-path`
+pointer, else `~/.chronicle`) and always overwritten, because the config file
+lives inside the store it would be describing. To relocate, run `install.sh
+--store <dir>` — it writes the anchor's `store-path` pointer, which every
+invocation reads at runtime (no env, nothing to sync). See the README's "Storing
+your data somewhere else".
 
 `capture.mode` is `"live"` (filesystem-watch) or `"poll"` (with `interval_ms`).
 Raw capture is **never** truncated; `max_tool_output_length` bounds only markdown.
@@ -203,9 +210,14 @@ Raw capture is **never** truncated; `max_tool_output_length` bounds only markdow
   `rebuild` command and `tests/layers.rs` prove it.
 - **Restart-safe capture** — newline-boundary offsets persisted atomically
   (temp file + rename); trailing partial lines are buffered, never committed.
-- **Single-source-of-truth binary** — installed at `~/.chronicle/bin/chronicle`;
-  daemon service and plugin reference it by absolute path so they can't version-
-  skew. The plugin does not bundle its own binary. Override with `CHRONICLE_HOME`.
+- **Single-source-of-truth binary** — installed at the fixed anchor path
+  `~/.chronicle/bin/chronicle`; daemon service and plugin reference it by
+  absolute path so they can't version-skew. The plugin does not bundle its own
+  binary.
+- **Store located by pointer, not env** — the store (config + data) lives at the
+  anchor by default, or wherever the anchor's `store-path` file points
+  (`install.sh --store` writes it). Resolution is a pure function of on-disk
+  state, so daemon/plugin/CLI agree with nothing to keep in sync.
 - **Fail-safe watchdog** — always exits 0; monitoring never blocks a session.
 - **No heavy deps** — `notify`, `rusqlite` (bundled SQLite), `serde`, `clap`,
   `chrono`, `anyhow`, `dirs`.

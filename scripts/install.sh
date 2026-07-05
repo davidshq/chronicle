@@ -7,19 +7,50 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# --store <dir>: where the store (config + data layers) lives. Defaults to the
+# anchor (~/.chronicle). This is an install-time argument, not runtime config —
+# it's written into the anchor's store-path pointer, which is the source of truth.
+usage() { echo "Usage: $0 [--store <dir>]"; }
+STORE_ARG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --store) STORE_ARG="${2:?--store requires a directory}"; shift 2 ;;
+    --store=*) STORE_ARG="${1#--store=}"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
+  esac
+done
+
 echo "==> Building chronicle (release)…"
 cargo build --release
 
-# Install to a fixed, well-known location that both the daemon service and the
-# in-session plugin reference by absolute path. This is the single source of
-# truth for the binary — one copy, so the plugin can never drift to a different
-# version than the daemon writing the store. (cf. ~/.cargo/bin, ~/.nvm.)
-CHRONICLE_HOME="${CHRONICLE_HOME:-$HOME/.chronicle}"
-BIN_DIR="$CHRONICLE_HOME/bin"
+# The anchor is a fixed, well-known location (~/.chronicle) that both the daemon
+# service and the in-session plugin reference by absolute path. It holds the one
+# installed binary — a single source of truth, so the plugin can never drift to a
+# different version than the daemon — and the store-path pointer. (cf. ~/.cargo.)
+ANCHOR="$HOME/.chronicle"
+BIN_DIR="$ANCHOR/bin"
 BIN="$BIN_DIR/chronicle"
 mkdir -p "$BIN_DIR"
 cp "$ROOT/target/release/chronicle" "$BIN"
 echo "==> Installed binary at $BIN"
+
+# Where the store (config + data layers) actually lives. Defaults to the anchor;
+# pass --store to keep the bulky raw/markdown/index elsewhere (bigger disk,
+# encrypted volume, …). A one-line pointer in the anchor redirects every
+# invocation there — no environment needed at runtime.
+STORE="${STORE_ARG:-$ANCHOR}"
+mkdir -p "$STORE"
+# Canonicalize to an absolute path: the daemon runs under systemd/launchd with an
+# unpredictable CWD, so a relative pointer would resolve to the wrong place. This
+# also normalizes a trailing slash, so "~/.chronicle/" still matches the anchor.
+STORE="$(cd "$STORE" && pwd)"
+if [ "$STORE" = "$ANCHOR" ]; then
+  rm -f "$ANCHOR/store-path"        # store is the anchor: no redirection
+else
+  printf '%s\n' "$STORE" > "$ANCHOR/store-path"
+  echo "==> Store located at $STORE (via $ANCHOR/store-path)"
+fi
 
 # Also expose on PATH for interactive use if ~/.local/bin exists.
 if [ -d "$HOME/.local/bin" ]; then
@@ -27,6 +58,7 @@ if [ -d "$HOME/.local/bin" ]; then
   echo "==> Also installed at ~/.local/bin/chronicle (for interactive PATH use)"
 fi
 
+# Migrate after the pointer is written, so it imports into the resolved store.
 echo "==> Migrating any existing ~/.claude-logs store…"
 "$BIN" migrate || true
 
@@ -40,10 +72,9 @@ case "$OS" in
 Description=Chronicle capture daemon (lossless Claude Code session recorder)
 
 [Service]
-# Pass the store explicitly: systemd --user does not inherit the shell env, so
-# CHRONICLE_HOME would otherwise be invisible and the daemon would fall back to
-# ~/.chronicle even when installed elsewhere.
-ExecStart=$BIN daemon --store "$CHRONICLE_HOME"
+# No --store needed: the daemon resolves the store from the anchor's store-path
+# pointer at runtime, so it works regardless of the (scrubbed) service env.
+ExecStart=$BIN daemon
 Restart=always
 RestartSec=3
 
@@ -68,7 +99,7 @@ EOF
 <dict>
   <key>Label</key><string>com.davidshq.chronicle</string>
   <key>ProgramArguments</key>
-  <array><string>$BIN</string><string>daemon</string><string>--store</string><string>$CHRONICLE_HOME</string></array>
+  <array><string>$BIN</string><string>daemon</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
 </dict>

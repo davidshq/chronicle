@@ -181,10 +181,12 @@ re-indexing does not duplicate rows that carry a uuid.
   index.db                        SQLite + FTS5
 ```
 
-The binary lives at a fixed, well-known path so both the daemon service and the
-plugin reference it by absolute path — a single source of truth, so the plugin
-can never drift to a different version than the daemon writing the store.
-Override the location with the `CHRONICLE_HOME` environment variable.
+The binary lives at a fixed, well-known path (`~/.chronicle/bin/chronicle`) so
+both the daemon service and the plugin reference it by absolute path — a single
+source of truth, so the plugin can never drift to a different version than the
+daemon writing the store. The store itself lives at that anchor by default, or
+wherever the anchor's `store-path` pointer redirects (set via `install.sh
+--store <dir>`; see `resolve_store_dir`).
 
 ## The Watchdog (`src/commands/watchdog.rs`)
 

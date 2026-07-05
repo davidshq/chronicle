@@ -126,7 +126,7 @@ chronicle/
 ### Testing the plugin inside Claude Code
 
 The slash commands and the SessionStart watchdog call the binary by absolute path
-(`${CHRONICLE_HOME:-$HOME/.chronicle}/bin/chronicle`). To test them live:
+(`$HOME/.chronicle/bin/chronicle`). To test them live:
 
 ```bash
 # Put a fresh build where the plugin expects it
@@ -137,15 +137,16 @@ cp target/debug/chronicle ~/.chronicle/bin/chronicle
 claude --plugin-dir .
 ```
 
-Point `CHRONICLE_HOME` at a scratch dir to avoid touching your real store while
-testing (`CHRONICLE_HOME=/tmp/chronicle-dev claude --plugin-dir .`).
+To avoid touching your real store while testing, point subcommands at a scratch
+store with `--store` (e.g. `cargo run -- status --store /tmp/chronicle-dev`); it
+overrides the anchor's `store-path` pointer.
 
 ## Debugging
 
 ### Inspect the store
 
 ```bash
-STORE="${CHRONICLE_HOME:-$HOME/.chronicle}"
+STORE="$HOME/.chronicle"   # or the path in ~/.chronicle/store-path, if relocated
 
 # Health
 cargo run -- watchdog --json --store "$STORE"

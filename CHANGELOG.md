@@ -26,9 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **In-session plugin** as a thin client: `/chronicle:search`,
   `/chronicle:status`, `/chronicle:today`, and a SessionStart **watchdog** hook
   that warns when the recorder is down or stale (it never captures).
-- **Single-source-of-truth binary** installed to `~/.chronicle/bin/chronicle`
-  (override with `CHRONICLE_HOME`); the daemon service and the plugin both
-  reference it by absolute path, so they cannot version-skew.
+- **Single-source-of-truth binary** installed to the fixed anchor
+  `~/.chronicle/bin/chronicle`; the daemon service and the plugin both reference
+  it by absolute path, so they cannot version-skew. The store (config + data)
+  lives at the anchor by default, or wherever the anchor's `store-path` pointer
+  redirects (`install.sh --store <dir>`).
 - `chronicle migrate` to preserve an existing `~/.claude-logs` store.
 - `scripts/install.sh` to build, install, register a user service
   (systemd/launchd), and migrate.

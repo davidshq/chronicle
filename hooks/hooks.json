@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'H=\"${CHRONICLE_HOME:-$HOME/.chronicle}\"; B=\"$H/bin/chronicle\"; [ -x \"$B\" ] && exec \"$B\" watchdog --store \"$H\"; command -v chronicle >/dev/null 2>&1 && exec chronicle watchdog --store \"$H\"; exit 0'",
+            "command": "sh -c 'B=\"$HOME/.chronicle/bin/chronicle\"; [ -x \"$B\" ] && exec \"$B\" watchdog; command -v chronicle >/dev/null 2>&1 && exec chronicle watchdog; exit 0'",
             "timeout": 5
           }
         ]

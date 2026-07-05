@@ -62,40 +62,39 @@ claude plugin install chronicle@chronicle
 
 ### Storing your data somewhere else
 
-By default everything lives under `~/.chronicle`. To put it elsewhere — a bigger
-disk, an encrypted volume, a synced folder — set **`CHRONICLE_HOME`** before
-installing. It's the single knob: it relocates the binary, the daemon's store,
-the plugin's lookup, and the health watchdog together.
+By default the store — config plus the bulky `raw/`, `markdown/`, and `index.db`
+— lives under `~/.chronicle`. To put it elsewhere (a bigger disk, an encrypted
+volume, a synced folder), pass **`--store`** when you install:
 
 ```bash
-# Install with the store at a custom root:
-CHRONICLE_HOME=/mnt/data/chronicle ./scripts/install.sh
+./scripts/install.sh --store /mnt/data/chronicle
 ```
 
-The path is baked into the generated service unit, so the daemon uses it on
-every boot without needing the variable exported. For interactive commands
-(`chronicle status`, `search`, …) run from your own shell, export it so they
-resolve the same store:
+`~/.chronicle` stays as a small fixed **anchor** — it keeps the binary and a
+one-line `store-path` file pointing at your real store. Every invocation (the
+daemon, `chronicle status`, the plugin's watchdog) reads that pointer to find
+the store, so they all agree with **nothing to export and nothing to keep in
+sync** — a pointer can't drift from what it points at. The config file itself
+lives *in* the store, so it stays self-contained and movable as a unit.
 
-```bash
-export CHRONICLE_HOME=/mnt/data/chronicle   # add to ~/.bashrc / ~/.zshrc
-```
+You can still point any single command at a store ad hoc with `--store <dir>`,
+which overrides the pointer (this is how the tests use throwaway stores). The
+`store_dir` field in `config.json` is **not** a relocation knob — it's resolved
+from the pointer/`--store` at load time and overwritten, since the config lives
+inside the store it would be describing.
 
-Any single command can also be pointed at a store ad hoc with `--store <dir>`,
-which overrides `CHRONICLE_HOME`. Note the `store_dir` field in `config.json` is
-**not** a relocation knob — the config file lives inside the store, so that field
-is resolved from `CHRONICLE_HOME`/`--store` at load time and can't move the store
-from within.
-
-**Moving an existing store:** stop the daemon, move the data, reinstall pointed
-at the new root, then rebuild the derived layers from the raw ground truth:
+**Moving an existing store:** stop the daemon, move the store, then reinstall
+pointed at the new location. Reinstall recreates the `~/.chronicle` anchor (a
+fresh binary + the `store-path` pointer), so the daemon and plugin follow along:
 
 ```bash
 systemctl --user stop chronicle          # (Linux; on macOS: launchctl unload …)
 mv ~/.chronicle /mnt/data/chronicle
-CHRONICLE_HOME=/mnt/data/chronicle ./scripts/install.sh
-chronicle rebuild --store /mnt/data/chronicle
+./scripts/install.sh --store /mnt/data/chronicle
 ```
+
+The data moves intact, so no `rebuild` is needed — though `chronicle rebuild`
+regenerates the derived layers from raw at any time if you want to be sure.
 
 ## Usage
 
@@ -115,8 +114,11 @@ Inside Claude Code, the plugin also provides `/chronicle:status`,
 ## Store layout
 
 ```
-~/.chronicle/                     (or $CHRONICLE_HOME — see "Storing your data somewhere else")
+~/.chronicle/                     fixed anchor (always here)
   bin/chronicle                   the installed binary (used by daemon + plugin)
+  store-path                      one-line pointer to the store (absent ⇒ store is here)
+
+<store>/                          the anchor itself, or wherever store-path points
   config.json                     settings (layers, capture mode, exclusions…)
   heartbeat.json                  daemon liveness/freshness (read by the watchdog)
   state/offsets.json              restart-safe per-file byte offsets

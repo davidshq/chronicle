@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Which output layers the daemon writes. Each is independently opt-in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,12 +56,13 @@ pub struct Config {
     #[serde(default = "def_true")]
     pub enabled: bool,
 
-    /// Chronicle's own store root (raw archive, markdown, index, state).
+    /// Chronicle's own store root (raw archive, markdown, index, state, config).
     ///
-    /// Resolved at load time from `--store` or `$CHRONICLE_HOME` (see
-    /// `default_store_dir`) and always overwritten with that value, because the
-    /// config file lives *inside* the store — so editing this field in
-    /// `config.json` has no effect. Relocate via `$CHRONICLE_HOME` instead.
+    /// Resolved at load time by `resolve_store_dir` and always overwritten with
+    /// that value, because the config file lives *inside* the store — editing
+    /// this field in `config.json` has no effect. To relocate the store, point
+    /// the anchor's `store-path` file at the new dir (`install.sh --store` writes
+    /// it, or edit the file directly).
     #[serde(default = "default_store_dir")]
     pub store_dir: PathBuf,
 
@@ -122,17 +123,49 @@ fn def_staleness() -> u64 {
     7200
 }
 
-fn default_store_dir() -> PathBuf {
-    // `CHRONICLE_HOME` is the single relocation knob, shared with install.sh and
-    // the plugin's SessionStart hook, so the binary, the daemon's store, and the
-    // plugin all resolve to one root. An explicit `--store` still wins, since
-    // `load()` only falls back to this when no override was passed.
-    if let Some(home) = std::env::var_os("CHRONICLE_HOME").filter(|v| !v.is_empty()) {
-        return PathBuf::from(home);
-    }
+/// Name of the one-line pointer file inside the anchor dir. Its contents are the
+/// store directory; absent (or empty) means the store *is* the anchor.
+const STORE_POINTER: &str = "store-path";
+
+/// Chronicle's fixed anchor directory, `~/.chronicle`. Known a priori — with no
+/// environment or prior config — so any process can find its way to the store.
+/// It holds the installed binary and, when the store lives elsewhere, the
+/// `store-path` pointer that redirects to it.
+fn anchor_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".chronicle")
+}
+
+/// Resolve where the store (config + data layers) lives, without reading any
+/// config (that would be circular — config lives *in* the store).
+///
+/// Precedence: an explicit `--store` wins; else the `store-path` pointer in the
+/// anchor dir, if present and non-empty; else the anchor dir itself. This is a
+/// pure function of on-disk state — no daemon, no env — so the daemon, the
+/// plugin, and every CLI command agree on the store with nothing to keep "in
+/// sync". A pointer can't drift from what it points at.
+fn resolve_store_dir_in(anchor: &Path, override_dir: Option<PathBuf>) -> PathBuf {
+    if let Some(dir) = override_dir {
+        return dir;
+    }
+    if let Ok(contents) = std::fs::read_to_string(anchor.join(STORE_POINTER)) {
+        let trimmed = contents.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    anchor.to_path_buf()
+}
+
+fn resolve_store_dir(override_dir: Option<PathBuf>) -> PathBuf {
+    resolve_store_dir_in(&anchor_dir(), override_dir)
+}
+
+/// Used only as the `store_dir` field's serde/`Default` seed; the real value is
+/// always recomputed by `load()` via `resolve_store_dir`.
+fn default_store_dir() -> PathBuf {
+    resolve_store_dir(None)
 }
 
 fn default_watch_dirs() -> Vec<PathBuf> {
@@ -169,9 +202,11 @@ impl Config {
     }
 
     /// Load config from `<store_dir>/config.json`, falling back to defaults.
-    /// If `store_override` is given (e.g. `--store`), it wins for locating the file.
+    /// The store is located by `resolve_store_dir` (explicit `--store`, else the
+    /// anchor's `store-path` pointer, else `~/.chronicle`) — never from the
+    /// config itself, which lives inside the store.
     pub fn load(store_override: Option<PathBuf>) -> Result<Config> {
-        let store_dir = store_override.unwrap_or_else(default_store_dir);
+        let store_dir = resolve_store_dir(store_override);
         let path = Self::config_path(&store_dir);
         let mut cfg = if path.exists() {
             let text = std::fs::read_to_string(&path)
@@ -211,5 +246,39 @@ impl Config {
     /// A tool whose calls are omitted from every derived layer (raw keeps all).
     pub fn is_tool_excluded(&self, tool_name: &str) -> bool {
         self.exclude_tools.iter().any(|t| t == tool_name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn store_resolution_precedence() {
+        let anchor = std::env::temp_dir().join(format!("chronicle-anchor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&anchor);
+        std::fs::create_dir_all(&anchor).unwrap();
+
+        // No pointer, no override → the anchor itself is the store.
+        assert_eq!(resolve_store_dir_in(&anchor, None), anchor);
+
+        // Pointer present → its contents, whitespace-trimmed.
+        std::fs::write(anchor.join(STORE_POINTER), "  /mnt/data/chronicle \n").unwrap();
+        assert_eq!(
+            resolve_store_dir_in(&anchor, None),
+            PathBuf::from("/mnt/data/chronicle")
+        );
+
+        // An explicit --store beats the pointer.
+        assert_eq!(
+            resolve_store_dir_in(&anchor, Some(PathBuf::from("/tmp/override"))),
+            PathBuf::from("/tmp/override")
+        );
+
+        // An empty/whitespace pointer is ignored → back to the anchor.
+        std::fs::write(anchor.join(STORE_POINTER), "\n").unwrap();
+        assert_eq!(resolve_store_dir_in(&anchor, None), anchor);
+
+        let _ = std::fs::remove_dir_all(&anchor);
     }
 }
