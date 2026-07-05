@@ -57,6 +57,11 @@ pub struct Config {
     pub enabled: bool,
 
     /// Chronicle's own store root (raw archive, markdown, index, state).
+    ///
+    /// Resolved at load time from `--store` or `$CHRONICLE_HOME` (see
+    /// `default_store_dir`) and always overwritten with that value, because the
+    /// config file lives *inside* the store — so editing this field in
+    /// `config.json` has no effect. Relocate via `$CHRONICLE_HOME` instead.
     #[serde(default = "default_store_dir")]
     pub store_dir: PathBuf,
 
@@ -118,6 +123,13 @@ fn def_staleness() -> u64 {
 }
 
 fn default_store_dir() -> PathBuf {
+    // `CHRONICLE_HOME` is the single relocation knob, shared with install.sh and
+    // the plugin's SessionStart hook, so the binary, the daemon's store, and the
+    // plugin all resolve to one root. An explicit `--store` still wins, since
+    // `load()` only falls back to this when no override was passed.
+    if let Some(home) = std::env::var_os("CHRONICLE_HOME").filter(|v| !v.is_empty()) {
+        return PathBuf::from(home);
+    }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".chronicle")

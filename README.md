@@ -58,8 +58,44 @@ claude plugin install chronicle@chronicle
 
 > The plugin cannot install the capture daemon itself (it's a background system
 > service, outside Claude Code's reach), so `./scripts/install.sh` is required
-> even though the plugin is added separately. If you install the binary somewhere
-> other than `~/.chronicle`, set `CHRONICLE_HOME` so the plugin can find it.
+> even though the plugin is added separately.
+
+### Storing your data somewhere else
+
+By default everything lives under `~/.chronicle`. To put it elsewhere — a bigger
+disk, an encrypted volume, a synced folder — set **`CHRONICLE_HOME`** before
+installing. It's the single knob: it relocates the binary, the daemon's store,
+the plugin's lookup, and the health watchdog together.
+
+```bash
+# Install with the store at a custom root:
+CHRONICLE_HOME=/mnt/data/chronicle ./scripts/install.sh
+```
+
+The path is baked into the generated service unit, so the daemon uses it on
+every boot without needing the variable exported. For interactive commands
+(`chronicle status`, `search`, …) run from your own shell, export it so they
+resolve the same store:
+
+```bash
+export CHRONICLE_HOME=/mnt/data/chronicle   # add to ~/.bashrc / ~/.zshrc
+```
+
+Any single command can also be pointed at a store ad hoc with `--store <dir>`,
+which overrides `CHRONICLE_HOME`. Note the `store_dir` field in `config.json` is
+**not** a relocation knob — the config file lives inside the store, so that field
+is resolved from `CHRONICLE_HOME`/`--store` at load time and can't move the store
+from within.
+
+**Moving an existing store:** stop the daemon, move the data, reinstall pointed
+at the new root, then rebuild the derived layers from the raw ground truth:
+
+```bash
+systemctl --user stop chronicle          # (Linux; on macOS: launchctl unload …)
+mv ~/.chronicle /mnt/data/chronicle
+CHRONICLE_HOME=/mnt/data/chronicle ./scripts/install.sh
+chronicle rebuild --store /mnt/data/chronicle
+```
 
 ## Usage
 
@@ -79,13 +115,13 @@ Inside Claude Code, the plugin also provides `/chronicle:status`,
 ## Store layout
 
 ```
-~/.chronicle/
+~/.chronicle/                     (or $CHRONICLE_HOME — see "Storing your data somewhere else")
   bin/chronicle                   the installed binary (used by daemon + plugin)
   config.json                     settings (layers, capture mode, exclusions…)
   heartbeat.json                  daemon liveness/freshness (read by the watchdog)
   state/offsets.json              restart-safe per-file byte offsets
-  raw/<project>/<session>.jsonl   verbatim archive (ground truth)
-  markdown/<YYYY-MM-DD>/*.md       rendered mirror
+  raw/<project>/<session>.jsonl        verbatim archive (ground truth)
+  markdown/<project>/<YYYY-MM-DD>/*.md  rendered mirror
   index.db                        SQLite + FTS5
 ```
 

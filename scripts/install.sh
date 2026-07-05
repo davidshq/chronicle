@@ -40,7 +40,10 @@ case "$OS" in
 Description=Chronicle capture daemon (lossless Claude Code session recorder)
 
 [Service]
-ExecStart=$BIN daemon
+# Pass the store explicitly: systemd --user does not inherit the shell env, so
+# CHRONICLE_HOME would otherwise be invisible and the daemon would fall back to
+# ~/.chronicle even when installed elsewhere.
+ExecStart=$BIN daemon --store "$CHRONICLE_HOME"
 Restart=always
 RestartSec=3
 
@@ -65,7 +68,7 @@ EOF
 <dict>
   <key>Label</key><string>com.davidshq.chronicle</string>
   <key>ProgramArguments</key>
-  <array><string>$BIN</string><string>daemon</string></array>
+  <array><string>$BIN</string><string>daemon</string><string>--store</string><string>$CHRONICLE_HOME</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
 </dict>

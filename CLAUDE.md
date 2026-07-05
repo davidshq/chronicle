@@ -178,6 +178,12 @@ model). Key fields:
 }
 ```
 
+`store_dir` is **not** a relocation knob: it is resolved at load time from
+`--store` or `$CHRONICLE_HOME` (default `~/.chronicle`) and always overwritten
+with that value, because the config file itself lives inside the store. To put
+the store elsewhere, set `CHRONICLE_HOME` before `install.sh` (it's baked into
+the service unit) — see the README's "Storing your data somewhere else".
+
 `capture.mode` is `"live"` (filesystem-watch) or `"poll"` (with `interval_ms`).
 Raw capture is **never** truncated; `max_tool_output_length` bounds only markdown.
 
