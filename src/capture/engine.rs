@@ -15,6 +15,13 @@ use anyhow::Result;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+/// Largest chunk `sync_file` reads (and buffers) at once. A long backlog — e.g.
+/// a file that grew by gigabytes while the daemon was down — is drained in
+/// batches of this size instead of allocating the whole appended region up front,
+/// so peak memory stays flat. A single transcript line larger than this is still
+/// handled (the read is extended to its terminating newline).
+const READ_BATCH: usize = 8 * 1024 * 1024;
+
 pub struct Engine {
     cfg: Config,
     store: Store,
@@ -89,6 +96,9 @@ impl Engine {
 
     /// Capture newly-appended lines from a single transcript file.
     /// Returns the number of complete lines captured.
+    ///
+    /// The appended region is drained in bounded batches (`READ_BATCH`) so peak
+    /// memory stays flat no matter how far behind capture is.
     pub fn sync_file(&mut self, path: &Path) -> Result<usize> {
         let meta = match std::fs::metadata(path) {
             Ok(m) => m,
@@ -108,35 +118,79 @@ impl Engine {
         }
 
         let mut f = std::fs::File::open(path)?;
-        f.seek(SeekFrom::Start(start))?;
-        let mut buf = Vec::with_capacity((len - start) as usize);
-        f.read_to_end(&mut buf)?;
+        let mut pos = start;
+        let mut count = 0usize;
+        while pos < len {
+            f.seek(SeekFrom::Start(pos))?;
+            let want = ((len - pos) as usize).min(READ_BATCH);
+            let mut buf = Vec::with_capacity(want);
+            (&mut f).take(want as u64).read_to_end(&mut buf)?;
+            if buf.is_empty() {
+                break; // file shrank under us; resume on the next tick
+            }
 
-        // Partial-line buffering: only process through the last newline.
-        let last_nl = match buf.iter().rposition(|&b| b == b'\n') {
-            Some(idx) => idx,
-            None => return Ok(0), // no complete line yet; leave offset untouched
-        };
-        let complete = &buf[..=last_nl];
+            // Partial-line buffering: only process through the last newline.
+            let last_nl = match buf.iter().rposition(|&b| b == b'\n') {
+                Some(idx) => idx,
+                None => {
+                    // No complete line in this batch. If we didn't cap the read,
+                    // it's a trailing partial line at EOF — leave it. If we *did*
+                    // cap, it's a single line longer than READ_BATCH: fall back to
+                    // reading the whole remaining region so we can find its
+                    // terminating newline rather than wedging forever.
+                    if buf.len() < want || want < READ_BATCH {
+                        break;
+                    }
+                    f.seek(SeekFrom::Start(pos))?;
+                    buf.clear();
+                    (&mut f).take(len - pos).read_to_end(&mut buf)?;
+                    match buf.iter().rposition(|&b| b == b'\n') {
+                        Some(idx) => idx,
+                        None => break, // still no complete line; leave offset untouched
+                    }
+                }
+            };
 
-        // 1) Raw layer: append the complete bytes verbatim (byte-for-byte).
+            let complete = &buf[..=last_nl];
+            count += self.process_complete(path, complete)?;
+
+            // Advance and persist the offset (newline boundary → restart-safe).
+            pos += last_nl as u64 + 1;
+            self.offsets.set(path, pos);
+            self.offsets.persist()?;
+        }
+        Ok(count)
+    }
+
+    /// Append a run of complete lines to the raw archive verbatim, then feed each
+    /// parsed line to the derived layers. Returns the number of lines.
+    ///
+    /// A raw-layer failure **propagates** (via `?`): if we can't persist ground
+    /// truth, the caller must not advance the offset past it. A derived-layer
+    /// failure is **logged and swallowed** — raw has already been written and is
+    /// authoritative, so capture must still advance. Propagating a derived error
+    /// here would leave the offset unadvanced and re-drive these same bytes into
+    /// the append-only raw archive on the next tick, silently duplicating them.
+    /// Derived layers are rebuildable from raw (`chronicle rebuild`), so degrading
+    /// them is always the safe trade.
+    fn process_complete(&mut self, path: &Path, complete: &[u8]) -> Result<usize> {
         if let Some(raw) = &self.raw {
             let rel = self.rel_for(path);
             raw.append(&rel, complete)?;
         }
 
-        // 2) Derived layers: parse each complete line.
         let text = String::from_utf8_lossy(complete);
         let mut count = 0usize;
         for line in text.split_inclusive('\n') {
             let line = line.strip_suffix('\n').unwrap_or(line);
             count += 1;
-            self.feed_derived(path, line)?;
+            if let Err(e) = self.feed_derived(path, line) {
+                eprintln!(
+                    "[chronicle] derived-layer error for {} (raw archive is intact): {e}",
+                    path.display()
+                );
+            }
         }
-
-        // Advance and persist the offset (newline boundary → restart-safe).
-        self.offsets.set(path, start + last_nl as u64 + 1);
-        self.offsets.persist()?;
         Ok(count)
     }
 

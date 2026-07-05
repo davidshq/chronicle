@@ -3,7 +3,7 @@
 mod common;
 use chronicle::capture::Engine;
 use chronicle::config::Layers;
-use common::{line, test_config};
+use common::{all_layers, line, test_config};
 use std::fs;
 use std::io::Write;
 
@@ -104,4 +104,52 @@ fn scan_all_captures_new_files() {
     assert_eq!(n, 2, "both session files captured");
     assert!(store.join("raw/a/s.jsonl").exists());
     assert!(store.join("raw/b/s.jsonl").exists());
+}
+
+/// A derived-layer failure must never poison the raw archive. Regression for the
+/// bug where an error out of `feed_derived` propagated before the offset was
+/// persisted, leaving `sync_file` to re-drive — and duplicate — the same bytes
+/// into the append-only raw archive on the next tick.
+#[test]
+fn derived_failure_does_not_duplicate_raw() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let watch = tmp.path().join("projects");
+    let src = watch.join("proj");
+    fs::create_dir_all(&src).unwrap();
+    let session = src.join("s1.jsonl");
+
+    let l1 = line("s1", "/proj", "user", "hello");
+    let l2 = line("s1", "/proj", "assistant", "hi");
+    fs::write(&session, format!("{l1}\n{l2}\n")).unwrap();
+
+    let cfg = test_config(store.clone(), watch.clone(), all_layers());
+    let mut engine = Engine::new(cfg).unwrap();
+
+    // Sabotage the markdown layer: occupy its per-project folder with a regular
+    // file so every `ensure_file` -> create_dir_all fails, forcing feed_derived
+    // to error on each line. This exercises the raw-vs-derived isolation.
+    let md_project = store.join("markdown").join("proj");
+    fs::write(&md_project, b"not a directory").unwrap();
+
+    // Despite the derived failure, capture succeeds and raw gets both lines once.
+    let n = engine.sync_file(&session).unwrap();
+    assert_eq!(n, 2);
+    let raw_copy = store.join("raw").join("proj").join("s1.jsonl");
+    assert_eq!(fs::read_to_string(&raw_copy).unwrap(), format!("{l1}\n{l2}\n"));
+
+    // Append a third line and sync again. The offset advanced past the first two
+    // even though the derived layer failed, so raw must NOT re-copy them.
+    let l3 = line("s1", "/proj", "user", "more");
+    {
+        let mut f = fs::OpenOptions::new().append(true).open(&session).unwrap();
+        writeln!(f, "{l3}").unwrap();
+    }
+    let n = engine.sync_file(&session).unwrap();
+    assert_eq!(n, 1, "only the new line is processed; no re-drive of raw");
+    assert_eq!(
+        fs::read_to_string(&raw_copy).unwrap(),
+        format!("{l1}\n{l2}\n{l3}\n"),
+        "raw stays a single clean copy despite the derived-layer failure"
+    );
 }
