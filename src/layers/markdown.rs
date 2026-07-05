@@ -157,12 +157,84 @@ fn last_component(p: &str) -> &str {
     p.rsplit(['/', '\\']).next().filter(|s| !s.is_empty()).unwrap_or(p)
 }
 
+/// Longest path component we emit. Bounded well under the 255-byte per-component
+/// limit common to ext4/APFS/NTFS, with headroom for the disambiguating hash.
+const MAX_COMPONENT: usize = 120;
+
+/// Map an arbitrary string (project path, session id) to a safe path component.
+///
+/// Non-`[A-Za-z0-9_-]` characters become `-`. When the result would exceed
+/// `MAX_COMPONENT`, we keep a readable prefix and append a stable hash of the
+/// full sanitized value — so two long paths that share a prefix (e.g.
+/// deeply-nested monorepo siblings) can never truncate into the same folder.
+/// Truncation used to just drop the tail, silently merging such paths.
 fn sanitize(s: &str) -> String {
     let cleaned: String = s
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
         .collect();
     let trimmed = cleaned.trim_matches('-');
-    let out: String = trimmed.chars().take(50).collect();
-    if out.is_empty() { "unknown-project".to_string() } else { out }
+    if trimmed.is_empty() {
+        return "unknown-project".to_string();
+    }
+    if trimmed.chars().count() <= MAX_COMPONENT {
+        return trimmed.to_string();
+    }
+    // Too long: readable prefix + a collision-resistant suffix keyed off the
+    // full *sanitized* value (the same canonical form the prefix comes from),
+    // so distinct paths stay distinct while incidental byte differences that
+    // sanitize away (e.g. a trailing slash) still map to one stable folder.
+    let prefix: String = trimmed.chars().take(MAX_COMPONENT).collect();
+    format!("{}-{:016x}", prefix.trim_end_matches('-'), fnv1a(trimmed))
+}
+
+/// FNV-1a 64-bit. A tiny, dependency-free, version-stable hash — unlike
+/// `std`'s `DefaultHasher`, whose output isn't guaranteed across toolchains, so
+/// folder names stay put across Rust upgrades.
+fn fnv1a(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_inputs_pass_through_unchanged() {
+        assert_eq!(sanitize("/home/dave/repos/api"), "home-dave-repos-api");
+        // A session UUID is well under the cap and must be emitted verbatim.
+        assert_eq!(
+            sanitize("2eadfa15-bda9-47a5-b18d-3ca22027a9c9"),
+            "2eadfa15-bda9-47a5-b18d-3ca22027a9c9"
+        );
+    }
+
+    #[test]
+    fn empty_after_sanitizing_falls_back() {
+        assert_eq!(sanitize("/"), "unknown-project");
+        assert_eq!(sanitize(""), "unknown-project");
+    }
+
+    #[test]
+    fn long_paths_sharing_a_prefix_do_not_collide() {
+        // Two distinct repos whose difference lies *past* the truncation point.
+        let base = "/home/dave/".to_string() + &"nested/".repeat(30);
+        let a = sanitize(&(base.clone() + "service-alpha"));
+        let b = sanitize(&(base + "service-beta"));
+        assert_ne!(a, b, "prefix-sharing long paths must stay distinct");
+        // Each stays within the per-component filesystem limit.
+        assert!(a.len() <= MAX_COMPONENT + 17 && b.len() <= MAX_COMPONENT + 17);
+    }
+
+    #[test]
+    fn hash_is_stable() {
+        // Guards against an accidental constant/algorithm change that would
+        // silently relocate every truncated folder on the next rebuild.
+        assert_eq!(fnv1a("chronicle"), 0xad20_67bc_d635_bf42);
+    }
 }
