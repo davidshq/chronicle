@@ -213,7 +213,6 @@ impl Index {
         Ok(rows)
     }
 
-    #[allow(dead_code)]
     pub fn session_count(&self) -> Result<i64> {
         let n: i64 = self
             .conn

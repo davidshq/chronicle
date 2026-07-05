@@ -36,9 +36,4 @@ impl RawArchive {
             .with_context(|| format!("appending to {}", dest.display()))?;
         Ok(())
     }
-
-    #[allow(dead_code)]
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
 }

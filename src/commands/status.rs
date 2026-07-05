@@ -38,6 +38,7 @@ pub fn run(args: StatusArgs) -> Result<()> {
         return Ok(());
     }
     let index = Index::open(&db_path)?;
+    println!("\nRecording {} session(s).", index.session_count()?);
     let sessions = if args.today {
         let (start, end) = crate::time::today_local_utc_bounds();
         index.sessions_in_range(&start, &end)?

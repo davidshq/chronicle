@@ -66,11 +66,6 @@ impl Engine {
         })
     }
 
-    #[allow(dead_code)]
-    pub fn store(&self) -> &Store {
-        &self.store
-    }
-
     /// Resolve a source transcript path to its path relative to whichever
     /// watch dir contains it (used to mirror structure into the raw archive).
     fn rel_for(&self, path: &Path) -> PathBuf {
