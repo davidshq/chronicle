@@ -6,6 +6,13 @@ use crate::capture::Engine;
 use anyhow::Result;
 use notify::{RecursiveMode, Watcher};
 use std::path::Path;
+use std::sync::mpsc::RecvTimeoutError;
+use std::time::Duration;
+
+/// How often, at idle, the daemon proves liveness by ticking the heartbeat.
+/// Kept well under the default `staleness_secs` (7200s) so a healthy but idle
+/// daemon never drifts into the watchdog's stale window.
+const HEARTBEAT_TICK: Duration = Duration::from_secs(60);
 
 pub fn run(mut engine: Engine, watch_dirs: &[std::path::PathBuf]) -> Result<()> {
     // Capture anything already present before we start watching.
@@ -28,9 +35,13 @@ pub fn run(mut engine: Engine, watch_dirs: &[std::path::PathBuf]) -> Result<()> 
 
     eprintln!("[chronicle] live capture started; watching {} dir(s)", watch_dirs.len());
 
-    for res in rx {
-        match res {
-            Ok(event) => {
+    // Block for filesystem events, but wake on a timer when idle so the daemon
+    // proves liveness independently of capture activity. Because the tick shares
+    // this thread with `sync_file`, a genuinely wedged capture loop won't tick —
+    // exactly the failure the watchdog exists to catch.
+    loop {
+        match rx.recv_timeout(HEARTBEAT_TICK) {
+            Ok(Ok(event)) => {
                 let mut captured = false;
                 for path in event.paths {
                     if is_jsonl(&path) {
@@ -45,7 +56,13 @@ pub fn run(mut engine: Engine, watch_dirs: &[std::path::PathBuf]) -> Result<()> 
                     engine.touch_heartbeat().ok();
                 }
             }
-            Err(e) => eprintln!("[chronicle] watch error: {e}"),
+            Ok(Err(e)) => eprintln!("[chronicle] watch error: {e}"),
+            Err(RecvTimeoutError::Timeout) => {
+                // Idle interval elapsed: refresh liveness without a capture.
+                engine.tick_heartbeat().ok();
+            }
+            // The watcher was dropped and the channel closed: nothing more to do.
+            Err(RecvTimeoutError::Disconnected) => break,
         }
     }
     Ok(())

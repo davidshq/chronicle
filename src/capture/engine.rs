@@ -23,6 +23,9 @@ pub struct Engine {
     md: Option<MarkdownMirror>,
     index: Option<Index>,
     started_at: String,
+    /// Time of the last real capture write. Preserved across liveness-only
+    /// ticks so `tick_heartbeat` can refresh `last_alive` without clobbering it.
+    last_sync: String,
 }
 
 impl Engine {
@@ -50,6 +53,7 @@ impl Engine {
         };
         let index = if cfg.layers.sqlite { Some(Index::open(&store.index_db_path())?) } else { None };
 
+        let started_at = crate::commands::now_rfc3339();
         Ok(Engine {
             cfg,
             store,
@@ -57,7 +61,8 @@ impl Engine {
             raw,
             md,
             index,
-            started_at: crate::commands::now_rfc3339(),
+            last_sync: started_at.clone(),
+            started_at,
         })
     }
 
@@ -235,12 +240,26 @@ impl Engine {
         Ok(total)
     }
 
-    /// Update the heartbeat file with the current pid and last-sync time.
-    pub fn touch_heartbeat(&self) -> Result<()> {
+    /// Record a real capture: advance both `last_sync` and `last_alive` to now.
+    /// Call this only when data was actually written.
+    pub fn touch_heartbeat(&mut self) -> Result<()> {
+        self.last_sync = crate::commands::now_rfc3339();
+        self.write_heartbeat()
+    }
+
+    /// Prove liveness without a capture: advance only `last_alive`, preserving
+    /// the last real `last_sync`. This is the timer tick that lets the watchdog
+    /// distinguish an idle-but-live daemon from a wedged one.
+    pub fn tick_heartbeat(&self) -> Result<()> {
+        self.write_heartbeat()
+    }
+
+    fn write_heartbeat(&self) -> Result<()> {
         let hb = Heartbeat {
             pid: std::process::id(),
             started_at: self.started_at.clone(),
-            last_sync: crate::commands::now_rfc3339(),
+            last_sync: self.last_sync.clone(),
+            last_alive: crate::commands::now_rfc3339(),
         };
         Heartbeat::write(&self.store, &hb)
     }

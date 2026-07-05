@@ -14,7 +14,9 @@ pub fn run(mut engine: Engine, interval_ms: u64) -> Result<()> {
         if let Err(e) = engine.scan_all() {
             eprintln!("[chronicle] scan error: {e}");
         }
-        engine.touch_heartbeat().ok();
+        // scan_all already bumped last_sync if it captured anything; tick here
+        // refreshes liveness each interval whether or not there was activity.
+        engine.tick_heartbeat().ok();
         std::thread::sleep(interval);
     }
 }

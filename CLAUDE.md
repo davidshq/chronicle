@@ -136,7 +136,7 @@ format drift degrades derived layers gracefully without ever risking raw.
 ~/.chronicle/
   bin/chronicle                   the installed binary (daemon + plugin both use it)
   config.json                     settings
-  heartbeat.json                  { pid, started_at, last_sync }  ← watchdog reads this
+  heartbeat.json                  { pid, started_at, last_sync, last_alive }  ← watchdog reads this
   state/offsets.json              per-file byte offsets (restart-safe capture)
   raw/<project>/<session>.jsonl   verbatim archive (ground truth)
   markdown/<YYYY-MM-DD>/*.md       rendered mirror

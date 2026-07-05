@@ -39,7 +39,13 @@ pub fn evaluate_health(cfg: &Config) -> Health {
         return Health::Down { reason: format!("daemon process {} is not alive", hb.pid) };
     }
 
-    match chrono::DateTime::parse_from_rfc3339(&hb.last_sync) {
+    // Staleness is measured against `last_alive` — the daemon's liveness tick,
+    // which advances on a timer independent of capture activity. This keeps an
+    // idle-but-live daemon from being reported as stale, while still catching a
+    // wedged one (whose tick stops). Fall back to `last_sync` for heartbeats
+    // written before `last_alive` existed.
+    let liveness = if hb.last_alive.is_empty() { &hb.last_sync } else { &hb.last_alive };
+    match chrono::DateTime::parse_from_rfc3339(liveness) {
         Ok(ts) => {
             let age = chrono::Utc::now().signed_duration_since(ts.with_timezone(&chrono::Utc));
             let age_secs = age.num_seconds();

@@ -3,7 +3,7 @@
 //! ```text
 //! <store_dir>/                     (default ~/.chronicle)
 //!   config.json                    user config
-//!   heartbeat.json                 { pid, started_at, last_sync }  <- watchdog reads this
+//!   heartbeat.json                 { pid, started_at, last_sync, last_alive }  <- watchdog reads this
 //!   state/offsets.json             per-file byte offsets (restart-safe capture)
 //!   raw/<project>/<session>.jsonl  verbatim archive (ground truth)
 //!   markdown/<YYYY-MM-DD>/*.md      rendered mirror
@@ -61,6 +61,13 @@ pub struct Heartbeat {
     pub started_at: String,
     /// RFC3339 timestamp of the most recent successful capture write.
     pub last_sync: String,
+    /// RFC3339 timestamp of the daemon's most recent proof of liveness. Unlike
+    /// `last_sync` this advances on a timer *independent of capture activity*
+    /// (see the tick in `capture::watch`), so an idle-but-live daemon can be
+    /// told apart from a wedged one. Empty for heartbeats written before this
+    /// field existed; readers fall back to `last_sync` in that case.
+    #[serde(default)]
+    pub last_alive: String,
 }
 
 impl Heartbeat {
