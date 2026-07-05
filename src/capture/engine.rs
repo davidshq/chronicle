@@ -365,12 +365,14 @@ fn file_stem(path: &Path) -> String {
 }
 
 /// Claude Code encodes the project path as the parent directory name with
-/// non-alphanumerics replaced by `-`. We can't perfectly invert it, so we use
-/// the decoded-ish directory name as a readable fallback when `cwd` is absent.
+/// non-alphanumerics replaced by `-`. That encoding isn't reversible (every
+/// `/`, `.`, `_` collapsed to `-`), so when `cwd` is absent we keep the encoded
+/// directory name verbatim rather than inventing slashes back in — a blind
+/// `-`→`/` swap produced actively wrong paths (`my-app` → `my/app`).
 fn decoded_project(path: &Path) -> String {
     path.parent()
         .and_then(|p| p.file_name())
-        .map(|s| s.to_string_lossy().replace('-', "/"))
+        .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "unknown".to_string())
 }
 

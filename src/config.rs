@@ -62,8 +62,10 @@ pub struct Config {
     /// that value, because the config file lives *inside* the store — editing
     /// this field in `config.json` has no effect. To relocate the store, point
     /// the anchor's `store-path` file at the new dir (`install.sh --store` writes
-    /// it, or edit the file directly).
-    #[serde(default = "default_store_dir")]
+    /// it, or edit the file directly). Not serialized back out: it's always
+    /// recomputed on load, so writing it into `config.json` would only advertise
+    /// a knob that has no effect (and could mislead someone into editing it).
+    #[serde(default = "default_store_dir", skip_serializing)]
     pub store_dir: PathBuf,
 
     /// Directories to watch for Claude Code transcript JSONL files.

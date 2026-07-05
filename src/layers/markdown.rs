@@ -12,6 +12,13 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+/// Cap on the lazily-built session→path cache. A single `rebuild` streams every
+/// session in the archive through one mirror; without a bound the map would grow
+/// one entry per session for the whole run. Clearing when full is safe — a later
+/// miss just recomputes the path and re-checks existence (which no-ops the header
+/// write on an already-created file).
+const MAX_CACHED_PATHS: usize = 4096;
+
 pub struct MarkdownMirror {
     root: PathBuf,
     max_len: usize,
@@ -97,6 +104,9 @@ impl MarkdownMirror {
                 line.timestamp.as_deref().unwrap_or("")
             );
             std::fs::write(&path, header)?;
+        }
+        if self.paths.len() >= MAX_CACHED_PATHS {
+            self.paths.clear();
         }
         self.paths.insert(session_id.to_string(), path.clone());
         Ok(path)

@@ -101,7 +101,14 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<usize> {
     for entry in std::fs::read_dir(src)?.flatten() {
         let path = entry.path();
         let target = dst.join(entry.file_name());
-        if path.is_dir() {
+        // `file_type()` does not follow symlinks (unlike `path.is_dir()`), so a
+        // symlinked directory in the old store can't send us into an infinite
+        // recursion. Skip symlinks entirely — the legacy markdown is plain files.
+        let ft = entry.file_type()?;
+        if ft.is_symlink() {
+            continue;
+        }
+        if ft.is_dir() {
             count += copy_tree(&path, &target)?;
         } else {
             std::fs::copy(&path, &target)?;
