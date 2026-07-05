@@ -31,6 +31,36 @@ fn remove_dir_all_if_exists(path: &Path) -> Result<()> {
     }
 }
 
+/// Clear the derived markdown mirror while preserving `imported/`.
+///
+/// The markdown dir is derived-from-raw and disposable — EXCEPT `imported/`,
+/// which `chronicle migrate` copies out of the old ~/.claude-logs store. Those
+/// legacy sessions have no raw archive to replay, so a blanket `remove_dir_all`
+/// here would destroy them with no way to reconstruct them (which is exactly
+/// what happened once — see the regression test in tests/layers.rs). Remove
+/// every child of `markdown/` except `imported/`.
+fn clear_derived_markdown(markdown_dir: &Path) -> Result<()> {
+    let entries = match std::fs::read_dir(markdown_dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            return Err(e).with_context(|| format!("reading {}", markdown_dir.display()));
+        }
+    };
+    for entry in entries.flatten() {
+        if entry.file_name() == "imported" {
+            continue; // preserved legacy import — not derived from raw
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            remove_dir_all_if_exists(&path)?;
+        } else {
+            remove_file_if_exists(&path)?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Args)]
 pub struct RebuildArgs {
     #[arg(long)]
@@ -55,7 +85,7 @@ pub fn rebuild(store_override: Option<PathBuf>) -> Result<usize> {
         let p = PathBuf::from(format!("{}{}", db.display(), suffix));
         remove_file_if_exists(&p)?;
     }
-    remove_dir_all_if_exists(&store.markdown_dir())?;
+    clear_derived_markdown(&store.markdown_dir())?;
 
     // 2) Replay the raw archive through the derived layers only.
     let mut rebuild_cfg = cfg.clone();
