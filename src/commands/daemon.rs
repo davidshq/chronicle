@@ -39,6 +39,11 @@ pub fn run(args: DaemonArgs) -> Result<()> {
         return Ok(());
     }
 
+    // Write a heartbeat immediately, before the (potentially long) initial scan,
+    // so `chronicle status` / `watchdog` report the daemon as healthy right after
+    // startup instead of "daemon has never run" while the first scan is underway.
+    engine.touch_heartbeat()?;
+
     if args.poll {
         return poll::run(engine, args.poll_interval_ms);
     }

@@ -37,7 +37,30 @@ enum Command {
     Rebuild(commands::rebuild::RebuildArgs),
 }
 
+/// Restore the default `SIGPIPE` disposition. Rust ignores `SIGPIPE` by default,
+/// which turns writes to a closed pipe into `EPIPE` errors that make `println!`
+/// panic — so `chronicle search … | head` would panic with a backtrace instead
+/// of exiting quietly. Resetting to `SIG_DFL` makes such a broken pipe terminate
+/// the process silently, the conventional CLI behavior.
+#[cfg(unix)]
+fn reset_sigpipe() {
+    const SIGPIPE: i32 = 13; // same value on Linux and macOS
+    const SIG_DFL: usize = 0;
+    // SAFETY: setting a signal disposition to the default handler is safe and is
+    // done once before any I/O; mirrors the hand-rolled libc binding in store.rs.
+    unsafe {
+        extern "C" {
+            fn signal(signum: i32, handler: usize) -> usize;
+        }
+        signal(SIGPIPE, SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn reset_sigpipe() {}
+
 fn main() -> anyhow::Result<()> {
+    reset_sigpipe();
     let cli = Cli::parse();
     match cli.command {
         Command::Daemon(args) => commands::daemon::run(args),
