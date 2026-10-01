@@ -133,7 +133,9 @@ impl Index {
     }
 
     /// Insert a message. Idempotent on (session_id, uuid) so re-indexing the
-    /// raw archive does not duplicate rows. Returns true if a row was inserted.
+    /// raw archive does not duplicate rows — but only for a non-NULL uuid:
+    /// SQLite never treats NULLs as equal under UNIQUE, so a row inserted
+    /// without one is re-inserted every time. Returns true if a row was inserted.
     #[allow(clippy::too_many_arguments)]
     pub fn insert_message(
         &self,
@@ -244,4 +246,15 @@ fn map_session(r: &rusqlite::Row) -> rusqlite::Result<SessionRow> {
         started_at: r.get(2)?,
         message_count: r.get(3)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fts_phrase_wraps_and_doubles_quotes() {
+        assert_eq!(fts_phrase("foo-bar"), r#""foo-bar""#);
+        assert_eq!(fts_phrase(r#"say "hi""#), r#""say ""hi""""#);
+    }
 }

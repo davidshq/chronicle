@@ -98,6 +98,39 @@ fn multiple_text_blocks_on_one_line_are_all_indexed() {
     assert_eq!(index.search("omega", 10).unwrap().len(), 1, "second text block indexed");
 }
 
+/// Indexing the same tool call/result line twice (e.g. a duplicated line in the
+/// raw archive, then replayed by rebuild) must not duplicate its rows. Tool rows
+/// used to be inserted with a NULL uuid, which UNIQUE(session_id, uuid) never
+/// dedupes, so each repeat added another row and inflated message_count.
+#[test]
+fn repeated_tool_lines_are_indexed_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = tmp.path().join("store");
+    let watch = tmp.path().join("projects");
+    let src = watch.join("proj");
+    fs::create_dir_all(&src).unwrap();
+    let session = src.join("s1.jsonl");
+    let call = tool_use_line("s1", "/home/me/proj", "toolu_1", "Bash", "cargo build");
+    let result = tool_result_line("s1", "/home/me/proj", "toolu_1", "compiled ok");
+    fs::write(&session, format!("{call}\n{result}\n{call}\n{result}\n")).unwrap();
+
+    let cfg = test_config(store.clone(), watch, all_layers());
+    let mut engine = Engine::new(cfg).unwrap();
+    engine.sync_file(&session).unwrap();
+
+    let index = Index::open(&store.join("index.db")).unwrap();
+    let rows: i64 = index
+        .conn
+        .query_row("SELECT COUNT(*) FROM messages WHERE role = 'tool'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 2, "one row for the call, one for the result");
+    let count: i64 = index
+        .conn
+        .query_row("SELECT message_count FROM sessions WHERE id = 's1'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 2, "message_count counts only inserted rows");
+}
+
 /// A session's `raw_path` must point at its *main* transcript, never at a
 /// subagent sidechain file. Sidechains carry the parent's `sessionId` (so they
 /// fold into the same session) but live at `<id>/subagents/agent-*.jsonl`;

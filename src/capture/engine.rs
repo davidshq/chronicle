@@ -256,15 +256,17 @@ impl Engine {
                 raw_path,
             )?;
             for (i, entry) in parsed.entries.iter().enumerate() {
+                // A single transcript line can carry several blocks (text, tool
+                // calls, tool results) that all share the line's uuid. Qualify
+                // the index key with the block's ordinal so siblings don't
+                // collide on UNIQUE(session_id, uuid) — otherwise the second is
+                // silently dropped by INSERT OR IGNORE. Every block kind gets a
+                // key: a NULL uuid never collides, so keyless tool rows would be
+                // re-inserted each time the same line is indexed. It's
+                // deterministic, so re-indexing/rebuild stays idempotent.
+                let uuid = parsed.uuid.as_ref().map(|u| format!("{u}#{i}"));
                 match entry {
                     jsonl::Entry::Text { role, text } => {
-                        // A single transcript line can carry several text blocks
-                        // that all share the line's uuid. Qualify the index key
-                        // with the block's ordinal so sibling blocks don't
-                        // collide on UNIQUE(session_id, uuid) — otherwise the
-                        // second is silently dropped by INSERT OR IGNORE. It's
-                        // deterministic, so re-indexing/rebuild stays idempotent.
-                        let uuid = parsed.uuid.as_ref().map(|u| format!("{u}#{i}"));
                         index.insert_message(
                             &session_id,
                             uuid.as_deref(),
@@ -280,7 +282,7 @@ impl Engine {
                         let input_json = serde_json::to_string(input).unwrap_or_default();
                         index.insert_message(
                             &session_id,
-                            None,
+                            uuid.as_deref(),
                             parsed.timestamp.as_deref().unwrap_or(""),
                             "tool",
                             "",
@@ -292,7 +294,7 @@ impl Engine {
                     jsonl::Entry::ToolResult { content, .. } => {
                         index.insert_message(
                             &session_id,
-                            None,
+                            uuid.as_deref(),
                             parsed.timestamp.as_deref().unwrap_or(""),
                             "tool",
                             "",

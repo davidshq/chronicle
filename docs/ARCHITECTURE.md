@@ -166,7 +166,12 @@ messages_fts  -- FTS5 virtual table over (content, tool_name, tool_input,
 ```
 
 `insert_message` uses `INSERT OR IGNORE` keyed on `(session_id, uuid)` so
-re-indexing does not duplicate rows that carry a uuid.
+re-indexing does not duplicate rows. Each row's key is the transcript line's
+uuid qualified by the block's ordinal (`<uuid>#<i>`), because one line can
+carry several text / tool-call / tool-result blocks. Every block kind must get
+a key: SQLite never treats NULLs as equal under `UNIQUE`, so a row inserted
+without one is re-inserted every time its line is indexed. (Lines with no uuid
+at all are rare metadata and still index without a key.)
 
 ## Store Layout (`~/.chronicle` by default)
 

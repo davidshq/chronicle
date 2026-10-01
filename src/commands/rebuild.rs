@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 /// Remove a file that may not exist. A missing file is fine (nothing to drop),
 /// but any *other* error — a locked WAL, a permissions problem — is surfaced
 /// loudly. Swallowing it would let the replay run into a surviving `index.db`
-/// and silently duplicate every row (tool rows in particular are not deduped;
+/// and silently duplicate rows (anything indexed without a uuid is not deduped;
 /// see `db::insert_message`).
 fn remove_file_if_exists(path: &Path) -> Result<()> {
     match std::fs::remove_file(path) {

@@ -174,6 +174,27 @@ cargo run -- rebuild --store "$STORE"
 This drops `index.db` and `markdown/`, then replays `raw/` through the derived
 layers with an isolated offsets file (the daemon's own offsets are untouched).
 
+### Check raw integrity
+
+The index deduplicates on uuid, so a damaged raw archive can look fine through
+`search`/`status`. Check raw directly: Claude Code never writes the same
+uuid-bearing line twice, so any repeat is a capture bug. (Repeated *metadata*
+lines — `mode`, `bridge-session`, `last-prompt`, … — are normal; Claude Code
+re-emits them and raw faithfully keeps them.)
+
+```bash
+python3 - "$STORE" <<'PY'
+import collections, pathlib, sys
+for f in pathlib.Path(sys.argv[1], "raw").rglob("*.jsonl"):
+    c = collections.Counter(l for l in f.read_bytes().splitlines() if b'"uuid"' in l)
+    if (n := sum(v - 1 for v in c.values() if v > 1)):
+        print(n, f)
+PY
+```
+
+A stale offset (the bug fixed in `35fa6b7`) shows up as repeat blocks that each
+copy the file's then-current tail and grow over time.
+
 ### Database locked errors
 
 The index uses WAL mode with a busy timeout. If a stray lock lingers during
